@@ -34,6 +34,6 @@ TALL_ticks$month <- month(TALL_ticks$datetime, label=TRUE)
 # Plot the data
 theme_set(theme_bw())
 ggplot(aes(x = datetime, y = observation), data = TALL_ticks) + 
-  geom_point()
+  geom_point() + labs(title="Talladega Site", x="Year", y="Tick abundance") + theme(plot.title = element_text(hjust = 0.5))
 
   
