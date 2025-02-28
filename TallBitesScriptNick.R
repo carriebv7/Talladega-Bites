@@ -63,8 +63,6 @@ theme_set(theme_bw())
 ggplot(aes(x = datetime, y = air_temperature), data = airtemp) + 
   geom_point()
 
-
-
 # converting humidity into data frame
 humidity <- data.frame(humidity_hist)
 colnames(humidity) <- c("datetime", "rel_humidity")
@@ -76,3 +74,73 @@ theme_set(theme_bw())
 ggplot(aes(x = datetime, y = rel_humidity), data = humidity) + 
   geom_point()
 
+
+
+
+## optional visuals for tick counts
+#visualize tick data w/ box/whisker plot by month
+ggplot(TALL_ticks, aes(x = month, y = observation)) +
+  geom_boxplot(fill = "lightblue", outlier.colour = "red") +
+  geom_jitter(width = 0.2, alpha = 0.5, color = "darkblue") +
+  labs(title = "Tick Counts by Month",
+       x = "Month",
+       y = "Tick Count") +
+  theme_bw()
+
+#tick data w/ violin plot by month
+ggplot(TALL_ticks, aes(x = month, y = observation)) +
+  geom_violin(fill = "lightgreen") +
+  geom_jitter(width = 0.2, alpha = 0.5, color = "darkblue") +
+  scale_y_log10() +
+  labs(title = "Tick Counts by Month (Log Scale)",
+       x = "Month",
+       y = "Tick Count (log scale)") +
+  theme_bw()
+
+#visualize tick data with line plot using monthly means
+monthly_mean <- TALL_ticks %>%
+  group_by(month) %>%
+  summarize(mean_ticks = mean(observation, na.rm = TRUE))
+
+ggplot(monthly_mean, aes(x = month, y = mean_ticks, group = 1)) +
+  geom_line(color = "darkgreen") +
+  geom_point(color = "darkred", size = 3) +
+  labs(title = "Mean Tick Counts by Month",
+       x = "Month",
+       y = "Mean Tick Count") +
+  theme_bw()
+
+
+#visualize monthly tick data/trends by year
+monthly_yearly <- TALL_ticks %>%
+  group_by(year, month) %>%
+  summarize(mean_ticks = mean(observation, na.rm = TRUE), .groups = "drop")
+# Plot the data with a separate line for each year on the same graph
+ggplot(monthly_yearly, aes(x = month, y = mean_ticks, group = year, color = as.factor(year))) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Monthly Tick Trends by Year",
+       x = "Month",
+       y = "Mean Tick Count",
+       color = "Year") +
+  theme_bw()
+
+
+#visualize tick data using heatmap by month and year
+ggplot(monthly_yearly, aes(x = month, y = as.factor(year), fill = mean_ticks)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c() +
+  labs(title = "Heatmap of Mean Tick Counts by Month and Year",
+       x = "Month",
+       y = "Year",
+       fill = "Mean Tick Count") +
+  theme_minimal()
+
+#visualize tick data using facet boxplots by month and year
+ggplot(TALL_ticks, aes(x = month, y = observation)) +
+  geom_boxplot(fill = "lightblue", outlier.colour = "red") +
+  facet_wrap(~ year, ncol = 3) +
+  labs(title = "Distribution of Tick Counts by Month and Year",
+       x = "Month",
+       y = "Tick Count") +
+  theme_bw()
