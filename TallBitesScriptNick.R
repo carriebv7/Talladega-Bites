@@ -46,6 +46,9 @@ humidity_hist <- as.matrix(weather_stage3 |>
 # Add a column that converts the 'date' to a 'month'.
 TALL_ticks$month <- month(TALL_ticks$datetime, label=TRUE)
 
+# add another column for year
+TALL_ticks$year <- year(TALL_ticks$datetime)
+
 # Plot the data
 theme_set(theme_bw())
 ggplot(aes(x = datetime, y = observation), data = TALL_ticks) + 
@@ -109,7 +112,6 @@ ggplot(monthly_mean, aes(x = month, y = mean_ticks, group = 1)) +
        x = "Month",
        y = "Mean Tick Count") +
   theme_bw()
-
 
 #visualize monthly tick data/trends by year
 monthly_yearly <- TALL_ticks %>%
