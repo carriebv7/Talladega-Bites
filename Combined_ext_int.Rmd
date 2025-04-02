@@ -1,0 +1,131 @@
+---
+title: "combined model"
+author: "Talladega Bites"
+date: "2025-04-02"
+output: html_document
+---
+
+#Talladega Bites
+
+```{r}
+#remotes::install_github("eco4cast/neon4cast")
+library(tidyverse)
+library(neon4cast)
+library(lubridate)
+library(rMR)
+library(arrow)
+require(ggplot2)
+forecast_date <- lubridate::as_date("2016-01-01")  
+
+  ## load site data
+site_data <- readr::read_csv("https://raw.githubusercontent.com/eco4cast/neon4cast-targets/main/NEON_Field_Site_Metadata_20220412.csv") |> 
+  dplyr::filter(ticks == 1)
+tall_data <- site_data[8, ]
+
+  # tick data
+ticks_data <- readr::read_csv("https://data.ecoforecast.org/neon4cast-targets/ticks/ticks-targets.csv.gz", guess_max = 1e6)
+TALL_ticks <- ticks_data[ticks_data$site_id == 'TALL',]
+
+# Add a column that converts the 'date' to a 'month'.
+TALL_ticks$month <- month(TALL_ticks$datetime, label=TRUE)
+
+# add another column for year
+TALL_ticks$year <- year(TALL_ticks$datetime)
+```
+
+```{r}
+# wrangled in python, will update when i turn the .ipynb into R script -- PG
+
+weather_data <- read_csv("monthly_avg_temp.csv")
+
+```
+
+```{r}
+library(dplyr)
+library(tidyr)
+
+# Convert 'month' to a character and create 'month-year' in the tick data
+TALL_ticks <- TALL_ticks %>%
+  mutate(month_year = paste0(year, "-", formatC(as.numeric(month), width = 2, flag = "0")))
+
+# Merge with weather data and drop rows with missing monthly_avg
+combined_data <- TALL_ticks %>%
+  left_join(weather_data, by = c("month_year" = "month-year")) %>%
+  drop_na(monthly_avg)
+
+# View the result
+head(combined_data)
+
+
+```
+
+X is a storage vessel, check latent state space TBL for the prior 
+X1 is initial condition - X2, X3, etc will be filled in with MCMC
+initial conditions (priors)
+
+y and temp will come from data, defined when you call JAGS
+
+```{r}
+combined_logistic <- "
+model{
+
+  ## priors
+  
+  X[1] ~ dnorm(x_ic,tau_ic) ## prior on initial condition, x_ic and tau_ic need to be defined in data
+  tau ~ dgamma(0.1,0.1)     ## precision for process error
+  
+  B0 ~ dnorm(0,0.1)         ## uninformative prior on rate y-intercept 
+  B1 ~ dnorm(0,0.1)         ## uninformative prior on rate slope
+  
+  B2 ~ dnorm(0,0.1)         ## uninformative prior on carrying capacity y-intercept
+  B3 ~ dnorm(0,0.1)         ## uninformative prior on carrying capacity slope
+  
+
+  ## process model
+    for(i in 2:Ni){
+      E[i] ~ dnorm(0,tau)                                      ## process error (normally distributed with tau precision)
+      r[i] <- B0 + B1*temp[i]                                  ## rate given temp
+      K[i] <- max(0.001, B2 + B3 * temp[i])                    ## Prevents zero/negative values, carrying capacity given temp
+      X[i] <- X[i-1] + r[i]*X[i-1]*(1 - X[i-1]/K[i]) + E[i]    ## state equation (logistic growth with process noise)
+    }
+  
+  ## data model
+    for(i in 1:Ni){
+      y[i] ~ dpois(max(0.001, X[i]))  # Ensures positive values
+
+    }
+  
+}
+"
+
+```
+
+```{r}
+data <- list(y=combined_data$observation, Ni=length(combined_data$observation),      ## tick data
+             temp=combined_data$monthly_avg,               ## weather inputs
+             x_ic=log(1000),tau_ic=100                   ## initial condition priors
+             )
+data$y <- round(data$y)  # Round values to integers
+
+j.model   <- jags.model (file = textConnection(combined_logistic),
+                             data = data,
+                             n.chains = 3)
+```
+
+
+```{r}
+out_1   <- coda.samples (model = j.model,
+                            variable.names = c("K","r","y"),
+                                n.iter = 5000)
+```
+
+```{r}
+plot(out_1[, c("r[5]", "r[10]", "r[15]")]) # just looking at a few since plotting them all breaks this line
+```
+
+```{r}
+plot(out_1[, c("K[5]", "K[10]", "K[15]")]) # just looking at a few since plotting them all breaks this line
+```
+```{r}
+gelman.plot(out_1)
+```
