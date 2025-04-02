@@ -1,0 +1,95 @@
+---
+title: "Null model - Historical time-series fit"
+author: "Nick Barba"
+date: "2025-03-31"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(rjags)
+```
+
+**"Pulling Data" - code copied**
+```{r}
+## load site data
+site_data <- readr::read_csv("https://raw.githubusercontent.com/eco4cast/neon4cast-targets/main/NEON_Field_Site_Metadata_20220412.csv") |> 
+  dplyr::filter(ticks == 1)
+tall_data <- site_data[8, ]
+
+  # tick data
+ticks_data <- readr::read_csv("https://data.ecoforecast.org/neon4cast-targets/ticks/ticks-targets.csv.gz", guess_max = 1e6)
+TALL_ticks <- ticks_data[ticks_data$site_id == 'TALL',]
+
+# weather data - humidity and temperature - only goes as far back as september 2020
+weather_stage3 <- neon4cast::noaa_stage3()
+airtemp_hist <- as.matrix(weather_stage3 |> 
+                            dplyr::filter(site_id == "TALL", variable == "air_temperature")|>
+                            dplyr::rename(ensemble = parameter) |>
+                            dplyr::select(datetime, prediction, ensemble) |>
+                            dplyr::mutate(date = as_date(datetime)) |>
+                            dplyr::group_by(date) |>
+                            dplyr::summarize(air_temperature = mean(prediction, na.rm = TRUE),
+                                             .groups = "drop") |>
+                            dplyr::rename(datetime = date) |>
+                            dplyr::mutate(air_temperature = air_temperature - 273.15) |>
+                            dplyr::collect())
+humidity_hist <- as.matrix(weather_stage3 |> 
+                             dplyr::filter(site_id == "TALL", variable == "relative_humidity")|>
+                             dplyr::rename(ensemble = parameter) |>
+                             dplyr::select(datetime, prediction, ensemble) |>
+                             dplyr::mutate(date = as_date(datetime)) |>
+                             dplyr::group_by(date) |>
+                             dplyr::summarize(relative_humidity = mean(prediction, na.rm = TRUE),
+                                              .groups = "drop") |>
+                             dplyr::rename(datetime = date) |>
+                             dplyr::collect())
+```
+**Null JAGS model**
+```{r}
+TALL_ticks$datetime <- as.Date(TALL_ticks$datetime)
+# Extract the month from the 'datetime' column and create a new 'month' column
+TALL_ticks$month <- format(TALL_ticks$datetime, "%m")
+
+TALL_list <- list(count = TALL_ticks$observation, month = TALL_ticks$month, n = length(TALL_ticks$observation), nt = 12)
+
+#write JAGS model, not scaling variance for simplicity (though ecologically sketchy)
+TALL_null <- "
+model{
+
+#mu, non-informative prior (high variance)
+mu ~ dnorm(0, 1 / 1000)
+
+tau_t ~ dgamma(0.1, 0.1)
+
+S ~ dgamma(0.1,0.1)
+tau <- 1 / (pow(S, 2))
+ 
+ for(i in 1:n){
+ count[i] ~ dnorm(Ex[i],tau)
+ Ex[i] <- mu + alpha_t[month[i]]
+ }
+ 
+ for(t in 1:nt){
+  alpha_t[t] ~ dnorm(0,tau_t)		## random month effect
+}
+}
+"
+#run JAGS
+tall.null.jags <- jags.model(file = textConnection(TALL_null),
+                      data = TALL_list,
+                      n.chains = 3)
+tall.null.out <- coda.samples(model = tall.null.jags,
+                         variable.names = c("mu","S", "alpha_t", "tau_t"),
+                         n.iter = 1000)
+
+#summary stats/correlation
+summary(tall.null.out)
+par(mar = c(4, 4, 2, 1))
+plot(tall.null.out)
+gelman.diag(tall.null.out)
+BGR <- gelman.plot(tall.null.out)
+out.matrix <- as.matrix(tall.null.out)
+pairs(out.matrix)
+cor(out.matrix)
+```
