@@ -1,0 +1,120 @@
+---
+title: "External_Tick"
+author: "Carrie Vanty"
+date: "2025-04-02"
+output: html_document
+---
+
+First, we must load our data
+```{r, echo=FALSE}
+dat <- read.csv("monthly_tick_temp.csv")
+library(rjags)
+```
+The data is the tick and temperature data used in the other models. We only used data if we had the month/year available for both tick count and average monthly temperature. If there were two tick counts for a given month/year, we averaged them together so that we had an average for the month.
+
+formatting data:
+```{r}
+t = dat[1:58,1] #time
+tick = dat[1:58,2] #monthly average ticks
+temp = dat[1:58,3] #monthly average temperature
+data <- list(temp = temp, n = length(t))
+```
+
+#Process Model
+
+We chose a linear model as our process model, which produces the mean tick count for a given temperature. Epsilon is our process error that is distributed normally.
+
+$$\mu_{tick-count}[i] = \beta_0 + \beta_1temp[i] + \epsilon[i]$$
+$$\epsilon \sim N(0, \tau)$$
+
+#Data Model
+
+We chose to use the Poisson distribution for our data model, since it is discrete and always positive. 
+
+$$y[i] \sim Pois(\mu_{tick-count}[i])$$
+
+#Choosen Priors
+
+We are using uninformed priors for our process model coefficients.
+
+$$\beta_1 \sim N(0,1/10,000)$$
+$$\beta_2 \sim N(0,1/10,000)$$
+For tau (the precision of our process error), we are using the gamma distribution, which is the general choice for generating precision.
+
+$$\tau \sim \Gamma(0.1,0.1)$$
+
+
+Specify Model
+```{r}
+tick_external <- "
+model{
+
+  b1 ~ dnorm(b0,1/10000)  
+  b2 ~ dnorm(b0,1/10000)    ## multivariate Normal prior on vector of regression params
+  
+  tau ~ dgamma(0.1,0.1)  ## precision for process error
+  
+
+  for(i in 1:n){
+      e[i] ~ dnorm(0,tau)             ## process error
+      mu[i] <- b1 + b2*temp[i] + e[i]  ## process model mu = mean monthly tick
+      y[i]  ~ dpois(mu[i])              ## data model
+  }
+}
+"
+```
+
+Specify priors
+```{r}
+data$b0 <- 0     ## regression b means
+```
+
+Letting JAGS decide on initial conditions, so that they are uninformed
+
+Call jags model
+```{r}
+j.model <- jags.model(file = textConnection(tick_external),
+                      data = data,
+                      n.chains = 3)
+```
+
+```{r}
+jags.out <- coda.samples(model = j.model,
+                         variable.names = c("b1","b2", "tau"),
+                         n.iter = 10000)
+```
+
+Plot
+```{r}
+plot(jags.out)
+```
+The trace plots for b1 and b2 appear to have converged since the chains are overlapping. The trace of tau does have overlap, but not as strong as b1 and b2, indicating that it may not have converged yet.
+
+
+Summary statistics
+```{r}
+summary(jags.out)
+```
+
+
+Correlation of parameters
+```{r}
+out <- as.matrix(jags.out)
+pairs(out)
+cor(out) 
+```
+b1 and b2 appear to be uncorrelated. The correlation values associated with tau are small, but the graphs appear different than the typical correlation plots.
+
+```{r}
+effectiveSize(jags.out)
+```
+
+```{r}
+gelman.plot(jags.out)
+gelman.diag(jags.out)
+```
+```{r}
+burnin = 1000                                   ## determine convergence
+jags.burn <- window(jags.out, start = burnin)  ## remove burn-in
+plot(jags.burn)                                ## check diagnostics post burn-in
+```
