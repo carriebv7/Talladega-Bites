@@ -1,0 +1,83 @@
+---
+title: "Internal Factors Model"
+author: "Skyler Crouch"
+date: "2025-04-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(rjags)
+library(coda)
+```
+
+**"Pulling Data" - code copied**
+```{r}
+## load site data
+site_data <- readr::read_csv("https://raw.githubusercontent.com/eco4cast/neon4cast-targets/main/NEON_Field_Site_Metadata_20220412.csv") |> 
+  dplyr::filter(ticks == 1)
+tall_data <- site_data[8, ]
+
+  # tick data
+ticks_data <- readr::read_csv("https://data.ecoforecast.org/neon4cast-targets/ticks/ticks-targets.csv.gz", guess_max = 1e6)
+TALL_ticks <- ticks_data[ticks_data$site_id == 'TALL',]
+```
+
+```{r}
+## internal factors model
+tall_internal <- "
+model{
+
+  ## Prior for the initial state on the count scale
+  X[1] ~ dnorm(x_ic, tau_ic)
+  
+  ## Prior for process error precision (tau_proc)
+  tau_proc ~ dgamma(0.1, 0.1)
+  
+  ## Priors for internal process parameters
+  r ~ dnorm(0.1, 0.1)            # Intrinsic growth rate
+  K ~ dnorm(0, 0.1) T(0,)   # Carrying capacity
+  
+  ## Set initial process mean
+  u_tc[1] <- X[1]
+  
+  ## Process model: logistic growth with process error
+  for(i in 2:Ni){
+    E[i] ~ dnorm(0, tau_proc)                                  # Process error
+    u_tc[i] <- r * X[i-1] * (1 - (X[i-1] / K)) + E[i]            # Process model
+    X[i] <- u_tc[i]                                            # Update latent state
+  }
+  
+  ## Data model: Observations are drawn from a Poisson distribution
+  for(i in 1:Ni){
+    y[i] ~ dpois(max(0.001, u_tc[i]))  # Ensures the Poisson mean is positive
+  }
+}
+"
+```
+
+```{r}
+## data list for jags
+data <- list(
+  y = round(TALL_ticks$observation),     # observed tick counts (rounded to integers)
+  Ni = length(TALL_ticks$observation),     # length of the time series
+  x_ic = log(1000),                        # initial condition 
+  tau_ic = 100                             # precision for the initial condition
+)
+```
+
+```{r}
+## run jags
+jags.model <- jags.model(file = textConnection(tall_internal),
+                      data = data,
+                      n.chains = 3)
+
+jags.out <- coda.samples(model = jags.model,
+                         variable.names = c("r", "K", "X", "tau_proc"),
+                         n.iter = 10000)
+
+# Plot the MCMC results and diagnostics
+par(mar = c(4, 4, 2, 2))
+plot(jags.out)
+gelman.diag(jags.out)
+```
