@@ -18,6 +18,13 @@ t = dat[1:58,1] #time
 tick = dat[1:58,2] #monthly average ticks
 temp = dat[1:58,3] #monthly average temperature
 data <- list(temp = temp, n = length(t))
+
+data$temp <- round(data$temp) 
+```
+
+
+```{r}
+plot(temp,tick)
 ```
 
 #Process Model
@@ -37,8 +44,8 @@ $$y[i] \sim Pois(\mu_{tick-count}[i])$$
 
 We are using uninformed priors for our process model coefficients.
 
-$$\beta_1 \sim N(0,1/10,000)$$
-$$\beta_2 \sim N(0,1/10,000)$$
+$$\beta_1 \sim N(0,1/1,000)$$
+$$\beta_2 \sim N(0,1/1,000)$$
 For tau (the precision of our process error), we are using the gamma distribution, which is the general choice for generating precision.
 
 $$\tau \sim \Gamma(0.1,0.1)$$
@@ -49,8 +56,8 @@ Specify Model
 tick_external <- "
 model{
 
-  b1 ~ dnorm(b0,1/10000)  
-  b2 ~ dnorm(b0,1/10000)    ## multivariate Normal prior on vector of regression params
+  b1 ~ dnorm(b0,1/1000)  
+  b2 ~ dnorm(b0,1/1000)    ## multivariate Normal prior on vector of regression params
   
   tau ~ dgamma(0.1,0.1)  ## precision for process error
   
@@ -58,7 +65,7 @@ model{
   for(i in 1:n){
       e[i] ~ dnorm(0,tau)             ## process error
       mu[i] <- b1 + b2*temp[i] + e[i]  ## process model mu = mean monthly tick
-      y[i]  ~ dpois(mu[i])              ## data model
+      y[i]  ~ dpois(max(0.001, mu[i]))              ## data model
   }
 }
 "
@@ -80,7 +87,7 @@ j.model <- jags.model(file = textConnection(tick_external),
 
 ```{r}
 jags.out <- coda.samples(model = j.model,
-                         variable.names = c("b1","b2", "tau"),
+                         variable.names = c("b1","b2","tau"),
                          n.iter = 10000)
 ```
 
@@ -88,7 +95,7 @@ Plot
 ```{r}
 plot(jags.out)
 ```
-The trace plots for b1 and b2 appear to have converged since the chains are overlapping. The trace of tau does have overlap, but not as strong as b1 and b2, indicating that it may not have converged yet.
+The trace plots for b1 and b2 appear to have converged since the chains are overlapping. The trace of tau does have overlap, but not as strong as b1 and b2, indicating that it may not have converged yet. Additionally, b1 and b2 have large ranges and tau is spending a lot of time around zero. This is largely because b1 and b2 have large uniformed priors. We hope to fix the range for b1 and b2 as we investigate our model further.
 
 
 Summary statistics
@@ -103,7 +110,7 @@ out <- as.matrix(jags.out)
 pairs(out)
 cor(out) 
 ```
-b1 and b2 appear to be uncorrelated. The correlation values associated with tau are small, but the graphs appear different than the typical correlation plots.
+b1 and b2 appear to be uncorrelated. The correlation values associated with tau are small, but the graphs appear different than the typical correlation plots due to tau spending a lot of time near zero.
 
 ```{r}
 effectiveSize(jags.out)
