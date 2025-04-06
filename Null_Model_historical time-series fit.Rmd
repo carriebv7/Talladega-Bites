@@ -60,11 +60,11 @@ model{
 #mu, non-informative prior (high variance)
 mu ~ dnorm(0, 1 / 1000)
 
-tau_t ~ dgamma(0.1, 0.1)
+tau_t ~ dgamma(1, 0.1)
 
 S ~ dgamma(0.1,0.1)
 tau <- 1 / (pow(S, 2))
- 
+
  for(i in 1:n){
  count[i] ~ dnorm(Ex[i],tau)
  Ex[i] <- mu + alpha_t[month[i]]
