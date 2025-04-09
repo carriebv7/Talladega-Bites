@@ -15,9 +15,9 @@ The data is the tick and temperature data used in the other models. We only used
 formatting data:
 ```{r}
 t = dat[1:58,1] #time
-tick = dat[1:58,3] #monthly average ticks
+tick = round(dat[1:58,3]) #monthly average ticks
 temp = dat[1:58,2] #monthly average temperature
-data <- list(temp = temp, n = length(t))
+data <- list(tick = tick, temp = temp, n = length(t))
 
 data$temp <- round(data$temp) 
 ```
@@ -26,12 +26,15 @@ data$temp <- round(data$temp)
 ```{r}
 plot(temp,tick)
 ```
-
+```{r}
+mod <- lm(tick~temp)
+summary(mod)
+```
 #Process Model
 
 We chose a linear model as our process model, which produces the mean tick count for a given temperature. Epsilon is our process error that is distributed normally.
 
-$$\mu_{tick-count}[i] = \beta_0 + \beta_1temp[i] + \epsilon[i]$$
+$$\mu_{tick-count}[i] = \beta_1 + \beta_2temp[i] + \epsilon[i]$$
 $$\epsilon \sim N(0, \tau)$$
 
 #Data Model
@@ -64,8 +67,9 @@ model{
 
   for(i in 1:n){
       e[i] ~ dnorm(0,tau)             ## process error
-      mu[i] <- b1 + b2*temp[i] + e[i]  ## process model mu = mean monthly tick
-      y[i]  ~ dpois(max(0.001, mu[i]))              ## data model
+      mu[i] <- b1 + b2*temp[i] + e[i] ## process model mu = mean monthly tick
+      #y[i]  ~ dnorm(mu[i],tau)  
+      tick[i]  ~ dpois(max(0.001, mu[i]))              ## data model
   }
 }
 "
@@ -74,34 +78,46 @@ model{
 Specify priors
 ```{r}
 data$b0 <- 0     ## regression b means
+#data$y <- tick
 ```
 
-Letting JAGS decide on initial conditions, so that they are uninformed
+Set up initial conditions
+```{r}
+inits <- list()
+
+nchain = 3
+inits <- list()
+for(i in 1:nchain){
+ inits[[i]] <- list(b1 = rnorm(1,0,5), b2 = rnorm(1,0,5))
+}
+```
+
 
 Call jags model
 ```{r}
 j.model <- jags.model(file = textConnection(tick_external),
                       data = data,
+                      inits = inits,
                       n.chains = 3)
 ```
 
 ```{r}
 jags.out <- coda.samples(model = j.model,
                          variable.names = c("b1","b2","tau"),
-                         n.iter = 10000)
+                         n.iter = 75000)
 ```
 
 Plot
 ```{r}
 plot(jags.out)
 ```
-The trace plots for b1 and b2 appear to have converged since the chains are overlapping. The trace of tau does have overlap, but not as strong as b1 and b2, indicating that it may not have converged yet. Additionally, tau is spending a lot of time around zero, which is likely due to our large precision.
+The trace plot for tau appears to have converged since the chains are overlapping. The trace plots of b1 and b2 do have overlap, but not as strong as tau, indicating that it may not have converged yet. 
 
 Summary statistics
 ```{r}
 summary(jags.out)
 ```
-
+b2 is around three, which is the value R's linear model found. b1 is around -12 and should theoretically be around -7
 
 Correlation of parameters
 ```{r}
@@ -109,7 +125,7 @@ out <- as.matrix(jags.out)
 pairs(out)
 cor(out) 
 ```
-b1 and b2 appear to be uncorrelated. The correlation values associated with tau are small, but the graphs appear different than the typical correlation plots due to tau spending a lot of time near zero.
+b1 and b2 appear to be correlated now, which is what we want from a linear model. We also see no correlation with b1,b2 and tau, which is what we expect.
 
 ```{r}
 effectiveSize(jags.out)
@@ -119,16 +135,20 @@ Gelman Plots
 gelman.plot(jags.out)
 gelman.diag(jags.out)
 ```
-We have convergence for b1,b2, and tau since all values from the Gelman diagnostics are equal to one.
+```{r}
+burnin = 15000                                   ## determine convergence
+jags.burn <- window(jags.out, start = burnin)  ## remove burn-in
+plot(jags.burn)       ## check diagnostics post burn-in
+```
+Our chains are not overlapping as much as they should if they are converging. This is likely due to our low precision.
 
 We also wanted to consider the summary, plots and convergence of the predicted mean number of ticks.
-
 ```{r}
-jags.out2 <- coda.samples(model = j.model2,
+jags.out2 <- coda.samples(model = j.model,
                          variable.names = c("mu[10]","mu[5]"),
                          n.iter = 60000)
 
-gelman.diag(jags.out2)
+summary(jags.out2)
 ```
 
 
@@ -136,17 +156,13 @@ Plot
 ```{r}
 plot(jags.out2)
 ```
-We do not have overlapping chains in our trace plots for mu indicating that the values are not converging.
+We do have overlapping chains in our trace plots for mu indicating that the values are converging. The values are also appropriate for the number of ticks at our site.
 
 ```{r}
 gelman.plot(jags.out2)
 gelman.diag(jags.out2)
 ```
- Even with an extremely high iteration rate (went up to 20,000,000) and more chains, we did not get convergence for the mu values. This is likely because we have high variance for b1 and b2, so the chains that the BGR statistic are measuring may not converge to the same value. For our next model, we will try and find information to establish an informed prior, so the variance is smaller.
+ We have convergence for mu values tested, thus we do not need burn in.
 
-```{r}
-burnin = 10000                                   ## determine convergence
-jags.burn <- window(jags.out2, start = burnin)  ## remove burn-in
-plot(jags.burn)       ## check diagnostics post burn-in
-```
+
 
