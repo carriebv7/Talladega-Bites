@@ -15,9 +15,16 @@ The data is the tick and temperature data used in the other models. We only used
 formatting data:
 ```{r}
 t = dat[1:58,1] #time
-tick = dat[1:58,2] #monthly average ticks
-temp = dat[1:58,3] #monthly average temperature
+tick = dat[1:58,3] #monthly average ticks
+temp = dat[1:58,2] #monthly average temperature
 data <- list(temp = temp, n = length(t))
+
+data$temp <- round(data$temp) 
+```
+
+
+```{r}
+plot(temp,tick)
 ```
 
 #Process Model
@@ -37,8 +44,8 @@ $$y[i] \sim Pois(\mu_{tick-count}[i])$$
 
 We are using uninformed priors for our process model coefficients.
 
-$$\beta_1 \sim N(0,1/10,000)$$
-$$\beta_2 \sim N(0,1/10,000)$$
+$$\beta_1 \sim N(0,1/1,000)$$
+$$\beta_2 \sim N(0,1/1,000)$$
 For tau (the precision of our process error), we are using the gamma distribution, which is the general choice for generating precision.
 
 $$\tau \sim \Gamma(0.1,0.1)$$
@@ -49,8 +56,8 @@ Specify Model
 tick_external <- "
 model{
 
-  b1 ~ dnorm(b0,1/10000)  
-  b2 ~ dnorm(b0,1/10000)    ## multivariate Normal prior on vector of regression params
+  b1 ~ dnorm(b0,1/1000)  
+  b2 ~ dnorm(b0,1/1000)    ## multivariate Normal prior on vector of regression params
   
   tau ~ dgamma(0.1,0.1)  ## precision for process error
   
@@ -58,7 +65,7 @@ model{
   for(i in 1:n){
       e[i] ~ dnorm(0,tau)             ## process error
       mu[i] <- b1 + b2*temp[i] + e[i]  ## process model mu = mean monthly tick
-      y[i]  ~ dpois(mu[i])              ## data model
+      y[i]  ~ dpois(max(0.001, mu[i]))              ## data model
   }
 }
 "
@@ -80,7 +87,7 @@ j.model <- jags.model(file = textConnection(tick_external),
 
 ```{r}
 jags.out <- coda.samples(model = j.model,
-                         variable.names = c("b1","b2", "tau"),
+                         variable.names = c("b1","b2","tau"),
                          n.iter = 10000)
 ```
 
@@ -88,8 +95,7 @@ Plot
 ```{r}
 plot(jags.out)
 ```
-The trace plots for b1 and b2 appear to have converged since the chains are overlapping. The trace of tau does have overlap, but not as strong as b1 and b2, indicating that it may not have converged yet.
-
+The trace plots for b1 and b2 appear to have converged since the chains are overlapping. The trace of tau does have overlap, but not as strong as b1 and b2, indicating that it may not have converged yet. Additionally, tau is spending a lot of time around zero, which is likely due to our large precision.
 
 Summary statistics
 ```{r}
@@ -103,18 +109,44 @@ out <- as.matrix(jags.out)
 pairs(out)
 cor(out) 
 ```
-b1 and b2 appear to be uncorrelated. The correlation values associated with tau are small, but the graphs appear different than the typical correlation plots.
+b1 and b2 appear to be uncorrelated. The correlation values associated with tau are small, but the graphs appear different than the typical correlation plots due to tau spending a lot of time near zero.
 
 ```{r}
 effectiveSize(jags.out)
 ```
-
+Gelman Plots
 ```{r}
 gelman.plot(jags.out)
 gelman.diag(jags.out)
 ```
+We have convergence for b1,b2, and tau since all values from the Gelman diagnostics are equal to one.
+
+We also wanted to consider the summary, plots and convergence of the predicted mean number of ticks.
+
 ```{r}
-burnin = 1000                                   ## determine convergence
-jags.burn <- window(jags.out, start = burnin)  ## remove burn-in
-plot(jags.burn)                                ## check diagnostics post burn-in
+jags.out2 <- coda.samples(model = j.model2,
+                         variable.names = c("mu[10]","mu[5]"),
+                         n.iter = 60000)
+
+gelman.diag(jags.out2)
 ```
+
+
+Plot
+```{r}
+plot(jags.out2)
+```
+We do not have overlapping chains in our trace plots for mu indicating that the values are not converging.
+
+```{r}
+gelman.plot(jags.out2)
+gelman.diag(jags.out2)
+```
+ Even with an extremely high iteration rate (went up to 20,000,000) and more chains, we did not get convergence for the mu values. This is likely because we have high variance for b1 and b2, so the chains that the BGR statistic are measuring may not converge to the same value. For our next model, we will try and find information to establish an informed prior, so the variance is smaller.
+
+```{r}
+burnin = 10000                                   ## determine convergence
+jags.burn <- window(jags.out2, start = burnin)  ## remove burn-in
+plot(jags.burn)       ## check diagnostics post burn-in
+```
+
