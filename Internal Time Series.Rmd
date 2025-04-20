@@ -41,7 +41,7 @@ model{
   ## Process model: logistic growth with process error
   for(i in 2:Ni){
     E[i] ~ dnorm(0,tau_proc)                               
-    X[i] <- r * X[i-1] * (1 - (X[i-1] / K)) + E[i]                                          
+    X[i] <- X[i-1] + r * (1 - (X[i-1] / K)) + E[i]                                          
   }
   
   ## Data model: Observations are drawn from a Poisson distribution
@@ -74,7 +74,7 @@ jags_model <- jags.model(file = textConnection(tall_internal),
 
 ```{r}
 jags.out <- coda.samples(model = jags_model,
-                         variable.names = c("K","r","X[5]","X[4]","tau_proc"),
+                         variable.names = c("K","r","X[5]","tau_proc"),
                          n.iter = 150000)
 ```
 ```{r}
