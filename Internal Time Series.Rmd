@@ -1,0 +1,148 @@
+---
+title: "Internal Time Series"
+author: "Carrie Vanty"
+date: "2025-04-20"
+output: html_document
+---
+
+```{r, echo=FALSE}
+dat <- read.csv("monthly_tick_temp.csv")
+library(rjags)
+```
+
+```{r}
+t = dat[1:58,1] #time
+tick = round(dat[1:58,3]) #monthly average ticks
+temp = dat[1:58,2] #monthly average temperature
+data <- list(tick = tick, temp = temp, Ni = length(t))
+
+data$temp <- round(data$temp) 
+```
+
+```{r}
+## internal factors model
+tall_internal <- "
+model{
+
+  ## Prior for the initial state on the count scale
+  x_ic ~ dnorm(0,0.1)      ## uninformative prior for initial condition of state equation
+  tau_ic ~ dgamma(0.1,0.1)  ## uninformatiev prior for precision of ic of state
+  
+  X[1] ~ dnorm(x_ic,tau_ic) ## prior on initial condition, x_ic and tau_ic need to be defined in data
+  
+  ## Prior for process error precision (tau_proc)
+  tau_proc ~ dgamma(0.1, 0.1)
+  
+  ## Priors for internal process parameters
+  r ~ dnorm(0, 1/1000)            # Intrinsic growth rate
+  K ~ dnorm(0, 1/1000)    # Carrying capacity
+  
+  
+  ## Process model: logistic growth with process error
+  for(i in 2:Ni){
+    E[i] ~ dnorm(0,tau_proc)                               
+    X[i] <- r * X[i-1] * (1 - (X[i-1] / K)) + E[i]                                          
+  }
+  
+  ## Data model: Observations are drawn from a Poisson distribution
+  for(i in 1:Ni){
+    tick[i] ~ dpois(max(0.001, X[i]))
+  }
+}
+"
+```
+
+```{r}
+## specify initial values
+nchain <- 5
+inits <- list()
+for(i in 1:nchain){
+  inits[[i]] <- list(
+    r = rnorm(1,0,1),           # initial guess for intrinsic growth rate
+    K = rpois(1,1000)          # initial guess for carrying capacity
+  )
+}
+```
+
+```{r}
+## run jags with the specified initial values
+jags_model <- jags.model(file = textConnection(tall_internal),
+                         data = data,
+                         inits = inits,
+                         n.chains = nchain)
+```
+
+```{r}
+jags.out <- coda.samples(model = jags_model,
+                         variable.names = c("K","r","X[5]","X[4]","tau_proc"),
+                         n.iter = 150000)
+```
+```{r}
+par(mar = c(4, 4, 2, 2))
+plot(jags.out)
+```
+
+```{r}
+par(mar = c(4, 4, 2, 2))
+plot(jags.out)
+gelman.diag(jags.out)
+```
+
+```{r}
+jags.mat <- as.matrix(jags.out2)
+sel.e <- grep("e",colnames(jags.mat))
+#plot(jags.out2[,sel.e])
+#summary(jags.out2[,sel.e])
+ e <- jags.mat[,sel.e]
+apply(e,2,mean)
+```
+
+```{r}
+date_string <- "2015-06"
+integer_value <- as.integer(gsub("-", "", date_string))
+#subinteger_value[1][1:4]
+
+year = as.integer(substr(t[1],1,4))
+month = as.integer(substr(t[1],6,7))
+
+#12*year + month
+time_index = vector(mode = "integer",length=58)
+for (k in 1:58) {
+  year = as.integer(substr(t[k],1,4))
+  month = as.integer(substr(t[k],6,7))
+  time_index[k] = 12*(year - 2015) + month
+}
+
+```
+
+
+```{r}
+out <- as.matrix(jags.out) 
+nsamp <- 5000
+samp <- sample.int(nrow(out),nsamp) ## sample nsamp random row numbers from the MCMC output
+xpred <- seq(min(time_index),max(time_index)) ## sequence of x values we're going to make predictions for
+npred <- length(xpred)
+ypred <- matrix(0.0,nrow=nsamp,ncol=npred)  ## storage for predictive interval
+ycred <- matrix(0.0,nrow=nsamp,ncol=npred)  ## storage for credible interval
+
+for(i in seq_len(nsamp)){
+  ycred[i,] <- out[samp[i],"r"]*out[samp[i],"X[5]"]*(1 - (out[samp[i],"X[5]"] / out[samp[i],"K"]))  #+ e[i,]
+  
+#I am not sure how to deal with the Xs and X-1 terms in a good way
+  #the +e was built from the following the mosquito tbl but it is not working correctly
+  #maybe it would be better to make the graphs that appear in activity 6
+  
+  ypred[i,] <- rpois(max(0.001, npred), max(0.001, ycred[i,]) )
+}
+
+
+ci <- apply(ycred,2,quantile,c(0.025,0.5,0.975))  ## credible interval and median
+pi <- apply(ypred,2,quantile,c(0.025,0.975))        ## prediction interval
+
+plot(time_index,tick ,cex=0.5, ylim=c(0,150))
+lines(xpred,ci[1,],col=3,lty=2) ## lower CI
+lines(xpred,ci[2,],col=3,lwd=3) ## median
+lines(xpred,ci[3,],col=3,lty=2) ## upper CI
+lines(xpred,pi[1,],col=4,lty=2) ## lower PI
+lines(xpred,pi[2,],col=4,lty=2) ## upper PI
+```
