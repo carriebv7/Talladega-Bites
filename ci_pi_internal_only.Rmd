@@ -1,0 +1,398 @@
+---
+title: "combined model"
+author: "Talladega Bites"
+date: "2025-04-02"
+output: html_document
+---
+
+#Talladega Bites
+
+```{r}
+#remotes::install_github("eco4cast/neon4cast")
+library(tidyverse)
+library(neon4cast)
+library(lubridate)
+library(rMR)
+library(arrow)
+library(rjags)
+require(ggplot2)
+library(dplyr)
+library(tidyr)
+```
+
+# Tick Data from Carrie
+```{r}
+dat <- read.csv("monthly_tick_temp.csv")
+library(rjags)
+```
+The data is the tick and temperature data used in the other models. We only used data if we had the month/year available for both tick count and average monthly temperature. If there were two tick counts for a given month/year, we averaged them together so that we had an average for the month.
+
+Formatting data:
+
+```{r}
+t = dat[1:58,1] #time
+tick = round(dat[1:58,3]) #monthly average ticks
+temp = dat[1:58,2] #monthly average temperature
+data <- list(tick = tick, temp = temp, n = length(t))
+
+data$temp <- round(data$temp) 
+```
+
+
+```{r}
+plot(temp,tick)
+```
+
+
+# Quick Model Summary
+
+For our combined internal and external factors model, we estimate mean tick count at time *i* (X[i]) using a carrying capacity model (density dependence as an internal factor) where **K** (carrying capacity) and **r** (growth rate) are dependent on **temperature** (our chosen external factor, for a start) and the state equation includes a term for **process error** (E). 
+
+$$
+X_i = r_i \cdot X_{i-1} \cdot \left(1 - \frac{X_{i-1}}{K_i} \right) + E_i
+$$
+$$
+r_i = \beta_0 + \beta_1 \cdot \text{temp}
+$$
+
+$$
+K_i = \exp(\beta_0 + \beta_1 \cdot \text{temp})
+$$
+$$
+E_i \sim \text{Normal}(0, \tau)
+$$
+$$
+\tau \sim \text{Gamma}(0.1, 0.1)
+$$
+
+To fit the model to historical data, we need months where we have both a tick count and a mean temperature, which is why you see me dropping rows missing one or the other in the code blocks above. Below, I define the model in JAGS-speak. Note that process error (E), r, and K are defined for each model loop. B0, B1 are the temperature effects on the rate variable, and B2, B3 are the temperature effects on the K, which shouldn't be changing, so they are not defined in each loop. We also have priors on the initial conditions at X[1], since at the first time point, we aren't sure what the ticks or temp at t-1 were.
+
+r and K are linear relationships for now, but that may have to be adjusted. I have also wrapped K in an exponential function to avoid any negative values. I initially just put a max(0.001) term on it, but that introduced issues with the traceplots (the chains were getting hung at 0.001); using exp() gives the distribution smoother approach to 0 and allows the MCMC to keep running more smoothly.
+
+-- look at correlation plots. Look for weird T shape (potato good, hugging is bad).
+-- constrain parts of model. Set K as hard 300, can help 
+-- run for 150 iters
+-- can try running without temp dependence (temp seems to not be influencing much)
+
+```{r}
+combined_logistic <- "
+model{
+
+  ## priors
+  x_ic ~ dnorm(0,0.1)      ## uninformative prior for initial condition of state equation
+  tau_ic ~ dgamma(0.1,0.1)  ## uninformatiev prior for precision of ic of state
+  
+  X[1] ~ dnorm(x_ic,tau_ic) ## prior on initial condition, x_ic and tau_ic need to be defined in data
+  tau ~ dgamma(0.1,0.1)     ## precision for process error
+
+  K <- 500 ## prior from lit review
+  r ~ dnorm(0,0.1)      ## uninformative prior on rate
+
+  ## process model
+    for(i in 2:Ni){
+      E[i] ~ dnorm(0,tau)       ## process error (normally distributed with tau precision)
+      X[i] <- X[i-1] + (r*X[i-1]*(1 - (X[i-1])/K)) + E[i] ## state equation (logistic growth with process noise)
+    }
+  
+  ## data model
+    for(i in 1:Ni){
+      y[i] ~ dpois(max(0.001, X[i]))  # Ensures positive values only
+    }
+}
+"
+```
+
+
+Here I am defining data for the model and initializing it in JAGS. Note that I round the tick counts (y) to integers, since we are using a poisson distribution for y[i]. 
+```{r}
+data <- list(y=data$tick, Ni=length(data$tick),      ## tick data
+             temp=data$temp               ## weather inputs
+             )
+
+j.model   <- jags.model (file = textConnection(combined_logistic),
+                             data = data,
+                             n.chains = 5)
+```
+
+And here we have the actual model running step. You can see that I have a lot of iterations and a burn-in period to help with convergence (which we're still not achieving with most, if not all, of the variables).
+
+```{r}
+out_1 <- coda.samples(model = j.model,
+                      variable.names = c("r", "y", "E", "K", "X"),
+                      n.iter = 150000,
+                      burnin = 10000)
+
+```
+
+
+```{r}
+plot(out_1[, c("r", "K")])
+```
+
+We (once again) see issues with convergence in the rate term.
+
+And some interesting dynamics nonconvergence dynamics in the K term. I am happy to see that it is changing between model runs, which I would expect to be true in a biological sense given how much the y varies between months.
+
+```{r}
+plot(out_1[, c("E[5]", "E[10]", "y[5]")])
+```
+
+Wow! I am so glad to see some fuzzy caterpillars! What's not great is how large the process error is compared to our other variables. :') That's saying the unpredictability in the biological process is very high. There is a reason I suspect this is happening -- I'll talk more about it in the write up at the end.
+
+Okay now we're looking at official convergence metrics for the variables:
+
+```{r}
+gelman.plot(out_1[, c("r")])
+```
+
+
+```{r}
+#gelman.plot(out_1[, c("y[5]", "y[10]", "y[15]")])
+
+# the file won't knit if this line runs -- but here is the error i get:
+
+#******* Error: *******
+#Cannot compute Gelman & Rubin's diagnostic for any chain 
+#segments for variables y[5] y[10] y[15] 
+#This indicates convergence failure
+
+```
+
+```{r}
+gelman.plot(out_1[, c("E[5]", "E[10]", "E[15]")])
+```
+
+
+None of these look like they're converging to me except for the process error terms. The y terms are so bad that the gelman function can't even plot them.
+
+
+```{r}
+gelman.diag(out_1[, c("r")])
+```
+
+```{r}
+#gelman.diag(out_1[, c("y[5]", "y[10]", "y[15]")])
+
+# again, file won't knit with this line. Error below:
+# Error in chol.default(W) : the leading minor of order 1 is not positive
+```
+
+```{r}
+gelman.diag(out_1[, c("E[5]", "E[10]", "E[15]")])
+```
+
+Above, confirming what the traceplots and BGR plots (and my heart) told us, none of the BGR metrics are below 1.1, which tells us the variables have not converged. :( Except for our superstar E (process error) term! It's nice to have a positive control for what a converged variable might look like, if nothing else.
+
+Let's look at some summary statistics:
+```{r}
+summary(out_1[, c("y[5]", "y[10]", "y[15]",
+              "r",
+              "E[5]", "E[10]", "E[15]")])
+```
+
+```{r}
+
+combined_mcmc <- as.mcmc(do.call(rbind, out_1))
+
+# convert to data frame
+params_df <- as.data.frame(combined_mcmc)
+
+
+params_subset <- params_df[, c("E[5]", "r", "K", "y[5]")]
+head(params_subset)
+```
+```{r}
+pairs(params_subset, pch = 1, cex = 0.3)
+```
+
+# Time Series
+
+```{r}
+# Flatten MCMC output
+out_matrix <- as.matrix(out_1)
+
+# Time vector
+time <- 1:length(data$y)
+
+# Extract latent state samples
+X_samples <- out_matrix[, grep("^X\\[", colnames(out_matrix))]
+
+# Compute posterior summaries
+X_median <- apply(X_samples, 2, median)
+X_CI <- apply(X_samples, 2, quantile, probs = c(0.025, 0.975))
+
+```
+
+```{r}
+
+# Base plot
+plot(time, X_median, type = 'l', lwd = 2, col = "blue", ylim = c(0, max(X_CI[2,]) * 1.1),
+     ylab = "N", xlab = "time")
+
+# 95% Credible interval as blue ribbon
+polygon(c(time, rev(time)),
+        c(X_CI[1,], rev(X_CI[2,])),
+        col = rgb(0, 0, 1, 0.2), border = NA)
+
+# Add median line again on top of ribbon
+lines(time, X_median, col = "blue", lwd = 2)
+
+# Observed data points
+points(time, data$y, pch = 21, bg = "white")
+
+legend("topright",
+       legend = c("Median latent state", "Observed counts", "95% Credible Interval"),
+       col = c("blue", "black", NA),
+       lwd = c(2, NA, NA),
+       pch = c(NA, 21, NA),
+       pt.bg = c(NA, "white", NA),
+       fill = c(NA, NA, rgb(0, 0, 1, 0.2)),  # Add fill for CI
+       border = c(NA, NA, NA),              # No border for fill
+       bty = "n",
+       cex = 0.8)
+
+
+```
+
+
+# add forecast interval to JAGS model
+
+```{r}
+int_log_forecast <- "
+model{
+
+  ## priors
+  x_ic ~ dnorm(0, 0.1)        # Prior for initial state
+  tau_ic ~ dgamma(0.1, 0.1)   # Precision on initial state
+
+  X[1] ~ dnorm(x_ic, tau_ic)  # Latent state initial value
+  tau ~ dgamma(0.1, 0.1)      # Process precision
+
+  K <- 500                    # Carrying capacity (from lit)
+  r ~ dnorm(0, 0.1)           # Growth rate
+
+  ## process model: from time 2 to Ni + N_forecast
+  for(i in 2:(Ni + N_forecast)) {
+    E[i] ~ dnorm(0, tau) 
+    X[i] <- X[i-1] + r * X[i-1] * (1 - X[i-1]/K) + E[i]
+  }
+
+  ## observation model: observed y[1:Ni], forecast y[Ni+1:end]
+  for(i in 1:(Ni + N_forecast)) {
+    y[i] ~ dpois(max(0.001, X[i]))
+  }
+}
+"
+```
+
+```{r}
+N_forecast <- 12
+
+Ni <- length(data$y)  # Number of observed time points
+
+# Create a full y vector: observed + 12 NA slots
+y_full <- c(data$y, rep(NA, N_forecast))
+
+data_jags <- list(
+  y = y_full,
+  Ni = Ni,
+  N_forecast = N_forecast
+)
+
+```
+
+```{r}
+j.model <- jags.model(
+  file = textConnection(int_log_forecast),
+  data = data_jags,
+  n.chains = 5
+)
+
+out_forecast <- coda.samples(
+  model = j.model,
+  variable.names = c("X", "y", "r", "K", "E"),
+  n.iter = 10000,
+  burnin = 1000
+)
+
+
+```
+
+```{r}
+plot(out_1[, c("r", "K")])
+```
+
+```{r}
+plot(out_1[, c("E[5]", "E[10]")])
+```
+
+
+```{r}
+# Combine all MCMC chains into one big matrix
+out_matrix <- do.call(rbind, out_forecast)
+
+# Now safely grab all X values (latent states)
+X_all <- out_matrix[, grep("^X\\[", colnames(out_matrix))]
+X_median <- apply(X_all, 2, median)
+X_CI <- apply(X_all, 2, quantile, probs = c(0.025, 0.975))
+
+# Extract future y draws
+y_all <- out_matrix[, grep("^y\\[", colnames(out_matrix))]
+
+# Only forecasted time steps
+y_pred_samples <- y_all[, (length(data$y)+1):(length(data$y)+N_forecast)]
+
+# Summarize
+y_PI <- apply(y_pred_samples, 2, quantile, probs = c(0.025, 0.975))
+y_pred_median <- apply(y_pred_samples, 2, median)
+
+```
+
+```{r}
+# Time vectors
+n_obs <- length(data$y)
+full_time <- 1:(n_obs + N_forecast)
+future_time <- (n_obs + 1):(n_obs + N_forecast)
+
+# Plot base
+plot(full_time, X_median, type = 'l', lwd = 2, col = "blue",
+     ylim = c(0, max(c(X_CI[2,], y_PI[2,])) * 1.1), ylab = "N", xlab = "time")
+
+# Credible interval ribbon for latent state
+polygon(c(full_time, rev(full_time)),
+        c(X_CI[1,], rev(X_CI[2,])),
+        col = rgb(0, 0, 1, 0.2), border = NA)
+
+# Predictive interval ribbon over forecasts only
+polygon(c(future_time, rev(future_time)),
+        c(y_PI[1,], rev(y_PI[2,])),
+        col = rgb(0, 0, 0, 0.2), border = NA)
+
+# Add median latent state again
+lines(full_time, X_median, col = "blue", lwd = 2)
+
+# Add observed points
+points(1:n_obs, data$y, pch = 21, bg = "white")
+
+# Add vertical line at forecast boundary
+abline(v = n_obs + 0.5, lty = 2)
+
+# Median forecasted observation values
+y_pred_median <- apply(y_pred_samples, 2, median)
+
+# Add forecast points (solid blue triangles)
+points(future_time, y_pred_median, pch = 17, col = "blue")
+
+legend("topleft",
+       legend = c("Median latent state", "Observed counts",
+                  "Forecasted counts", "95% Credible Interval", "95% Predictive Interval"),
+       col = c("blue", "black", "blue", NA, NA),
+       lwd = c(2, NA, NA, NA, NA),
+       pch = c(NA, 21, 17, NA, NA),
+       pt.bg = c(NA, "white", NA, NA, NA),
+       fill = c(NA, NA, NA, rgb(0, 0, 1, 0.2), rgb(0, 0, 0, 0.2)),
+       border = c(NA, NA, NA, NA, NA),
+       bty = "n", cex = 0.8)
+
+```
+
