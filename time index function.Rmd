@@ -1,0 +1,13 @@
+---
+title: "Time-Index Function"
+author: "Carrie Vanty"
+date: "2025-04-21"
+output: html_document
+---
+```{r}
+for (k in 1:58) {
+  year = as.integer(substr(t[k],1,4))
+  month = as.integer(substr(t[k],6,7))
+  time_index[k] = 12*(year - 2015) + month
+}
+```
