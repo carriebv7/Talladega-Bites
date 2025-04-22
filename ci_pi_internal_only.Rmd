@@ -74,42 +74,58 @@ r and K are linear relationships for now, but that may have to be adjusted. I ha
 -- run for 150 iters
 -- can try running without temp dependence (temp seems to not be influencing much)
 
+
+
 ```{r}
-combined_logistic <- "
+# Convert 'month.year' to a Date object (assuming format is YYYY-MM)
+dat$Date <- as.Date(paste0(dat$month.year, "-01"))
+
+# Calculate time step differences in months
+dat$TimeStep <- c(NA, diff(as.numeric(format(dat$Date, "%Y")) * 12 + as.numeric(format(dat$Date, "%m"))))
+
+dat <- dat[1:58,]
+dat$tick <- round(dat$tick)
+
+# View result
+head(dat)
+
+```
+
+```{r}
+log_solution_model <- "
 model{
 
   ## priors
-  x_ic ~ dnorm(0,0.1)      ## uninformative prior for initial condition of state equation
-  tau_ic ~ dgamma(0.1,0.1)  ## uninformatiev prior for precision of ic of state
+  ## tau (time between steps) from the dataframe
+  K <- 500
+  r ~ dnorm(0,0.01)
+  sigma ~ dgamma(0.1,0.1)
   
-  X[1] ~ dnorm(x_ic,tau_ic) ## prior on initial condition, x_ic and tau_ic need to be defined in data
-  tau ~ dgamma(0.1,0.1)     ## precision for process error
-
-  K <- 500 ## prior from lit review
-  r ~ dnorm(0,0.1)      ## uninformative prior on rate
-
+  N[1] ~ dnorm(N_ic, tau_N_ic)  # Latent state initial value
+  N_ic ~ dnorm(0, 0.1)        # Prior for initial state
+  tau_N_ic ~ dgamma(0.1, 0.1)   # Precision on initial state
+  
   ## process model
     for(i in 2:Ni){
-      E[i] ~ dnorm(0,tau)       ## process error (normally distributed with tau precision)
-      X[i] <- X[i-1] + (r*X[i-1]*(1 - (X[i-1])/K)) + E[i] ## state equation (logistic growth with process noise)
+      tau_E[i] <- sigma*sqrt(2*tau[i])
+      E[i] ~ dnorm(0, tau_E[i])
+      N[i] <- ((K*N[i-1]) / (N[i-1] + (K-N[i-1]))*exp(-r*tau[i])) + E[i]
     }
   
   ## data model
     for(i in 1:Ni){
-      y[i] ~ dpois(max(0.001, X[i]))  # Ensures positive values only
+      y[i] ~ dpois(max(0.001, N[i]))  # Ensures positive values only
     }
 }
 "
 ```
 
-
-Here I am defining data for the model and initializing it in JAGS. Note that I round the tick counts (y) to integers, since we are using a poisson distribution for y[i]. 
 ```{r}
-data <- list(y=data$tick, Ni=length(data$tick),      ## tick data
-             temp=data$temp               ## weather inputs
+data <- list(y=dat$tick, Ni=length(dat$tick),      ## tick data
+             tau=dat$TimeStep
              )
 
-j.model   <- jags.model (file = textConnection(combined_logistic),
+j.model   <- jags.model (file = textConnection(log_solution_model),
                              data = data,
                              n.chains = 5)
 ```
@@ -118,7 +134,7 @@ And here we have the actual model running step. You can see that I have a lot of
 
 ```{r}
 out_1 <- coda.samples(model = j.model,
-                      variable.names = c("r", "y", "E", "K", "X"),
+                      variable.names = c("r", "y", "E", "N", "sigma"),
                       n.iter = 150000,
                       burnin = 10000)
 
@@ -126,23 +142,15 @@ out_1 <- coda.samples(model = j.model,
 
 
 ```{r}
-plot(out_1[, c("r", "K")])
+plot(out_1[, c("r", "E[5]", "E[10]")])
 ```
 
-We (once again) see issues with convergence in the rate term.
-
-And some interesting dynamics nonconvergence dynamics in the K term. I am happy to see that it is changing between model runs, which I would expect to be true in a biological sense given how much the y varies between months.
-
 ```{r}
-plot(out_1[, c("E[5]", "E[10]", "y[5]")])
+plot(out_1[, c("sigma")])
 ```
 
-Wow! I am so glad to see some fuzzy caterpillars! What's not great is how large the process error is compared to our other variables. :') That's saying the unpredictability in the biological process is very high. There is a reason I suspect this is happening -- I'll talk more about it in the write up at the end.
-
-Okay now we're looking at official convergence metrics for the variables:
-
 ```{r}
-gelman.plot(out_1[, c("r")])
+gelman.plot(out_1[, c("r", "sigma")])
 ```
 
 
@@ -167,7 +175,7 @@ None of these look like they're converging to me except for the process error te
 
 
 ```{r}
-gelman.diag(out_1[, c("r")])
+gelman.diag(out_1[, c("r", "sigma")])
 ```
 
 ```{r}
@@ -198,7 +206,7 @@ combined_mcmc <- as.mcmc(do.call(rbind, out_1))
 params_df <- as.data.frame(combined_mcmc)
 
 
-params_subset <- params_df[, c("E[5]", "r", "K", "y[5]")]
+params_subset <- params_df[, c("E[5]", "E[10]", "E[15]", "r", "sigma")]
 head(params_subset)
 ```
 ```{r}
@@ -212,10 +220,10 @@ pairs(params_subset, pch = 1, cex = 0.3)
 out_matrix <- as.matrix(out_1)
 
 # Time vector
-time <- 1:length(data$y)
+time <- 1:length(dat$tick)
 
 # Extract latent state samples
-X_samples <- out_matrix[, grep("^X\\[", colnames(out_matrix))]
+X_samples <- out_matrix[, grep("^N\\[", colnames(out_matrix))]
 
 # Compute posterior summaries
 X_median <- apply(X_samples, 2, median)
@@ -226,19 +234,19 @@ X_CI <- apply(X_samples, 2, quantile, probs = c(0.025, 0.975))
 ```{r}
 
 # Base plot
-plot(time, X_median, type = 'l', lwd = 2, col = "blue", ylim = c(0, max(X_CI[2,]) * 1.1),
-     ylab = "N", xlab = "time")
+plot(dat$Date, X_median, type = 'l', lwd = 2, col = "blue", ylim = c(-100, max(X_CI[2,]) * 1.1),
+     ylab = "N", xlab = "Date")
 
 # 95% Credible interval as blue ribbon
-polygon(c(time, rev(time)),
+polygon(c(dat$Date, rev(dat$Date)),
         c(X_CI[1,], rev(X_CI[2,])),
         col = rgb(0, 0, 1, 0.2), border = NA)
 
 # Add median line again on top of ribbon
-lines(time, X_median, col = "blue", lwd = 2)
+lines(dat$Date, X_median, col = "blue", lwd = 2)
 
 # Observed data points
-points(time, data$y, pch = 21, bg = "white")
+points(dat$Date, data$y, pch = 21, bg = "white")
 
 legend("topright",
        legend = c("Median latent state", "Observed counts", "95% Credible Interval"),
@@ -258,60 +266,70 @@ legend("topright",
 # add forecast interval to JAGS model
 
 ```{r}
-int_log_forecast <- "
+log_solution_forecast <- "
 model{
 
   ## priors
-  x_ic ~ dnorm(0, 0.1)        # Prior for initial state
-  tau_ic ~ dgamma(0.1, 0.1)   # Precision on initial state
-
-  X[1] ~ dnorm(x_ic, tau_ic)  # Latent state initial value
-  tau ~ dgamma(0.1, 0.1)      # Process precision
-
-  K <- 500                    # Carrying capacity (from lit)
-  r ~ dnorm(0, 0.1)           # Growth rate
-
-  ## process model: from time 2 to Ni + N_forecast
-  for(i in 2:(Ni + N_forecast)) {
-    E[i] ~ dnorm(0, tau) 
-    X[i] <- X[i-1] + r * X[i-1] * (1 - X[i-1]/K) + E[i]
-  }
-
-  ## observation model: observed y[1:Ni], forecast y[Ni+1:end]
-  for(i in 1:(Ni + N_forecast)) {
-    y[i] ~ dpois(max(0.001, X[i]))
-  }
+  ## tau (time between steps) from the dataframe
+  K <- 500
+  r ~ dnorm(0,0.01)
+  sigma ~ dgamma(0.1,0.1)
+  
+  N[1] ~ dnorm(N_ic, tau_N_ic)  # Latent state initial value
+  N_ic ~ dnorm(0, 0.1)        # Prior for initial state
+  tau_N_ic ~ dgamma(0.1, 0.1)   # Precision on initial state
+  
+  ## process model
+    for(i in 2:Ni){
+      tau_E[i] <- sigma*sqrt(2*tau[i])
+      E[i] ~ dnorm(0, tau_E[i])
+      N[i] <- ((K*N[i-1]) / (N[i-1] + (K-N[i-1]))*exp(-r*tau[i])) + E[i]
+    }
+  
+  ## data model
+    for(i in 1:Ni){
+      y[i] ~ dpois(max(0.001, N[i]))  # Ensures positive values only
+    }
 }
 "
 ```
 
 ```{r}
 N_forecast <- 12
+Ni_obs <- length(dat$tick)
 
-Ni <- length(data$y)  # Number of observed time points
+# Extend y with 12 NAs
+y_full <- c(dat$tick, rep(NA, N_forecast))
 
-# Create a full y vector: observed + 12 NA slots
-y_full <- c(data$y, rep(NA, N_forecast))
+# Assume constant monthly step from last timestep
+# If TimeStep is in months (e.g., 1, 2, 3...), this just extends linearly
+last_tau <- tail(dat$TimeStep, 1)
+tau_forecast <- rep(1, N_forecast)  # each new step is 1 month
+tau_full <- c(dat$TimeStep, tau_forecast)
 
-data_jags <- list(
+# Total time points
+Ni <- length(y_full)
+
+data_forecast <- list(
   y = y_full,
-  Ni = Ni,
-  N_forecast = N_forecast
+  tau = tau_full,
+  Ni = Ni
 )
 
 ```
 
 ```{r}
 j.model <- jags.model(
-  file = textConnection(int_log_forecast),
-  data = data_jags,
+  file = textConnection(log_solution_model),
+  data = data_forecast,
   n.chains = 5
 )
 
+
 out_forecast <- coda.samples(
   model = j.model,
-  variable.names = c("X", "y", "r", "K", "E"),
-  n.iter = 10000,
+  variable.names = c("r", "y", "E", "N", "sigma"),
+  n.iter = 5000,
   burnin = 1000
 )
 
@@ -319,80 +337,86 @@ out_forecast <- coda.samples(
 ```
 
 ```{r}
-plot(out_1[, c("r", "K")])
+plot(out_forecast[, c("r", "E[5]", "E[10]")])
 ```
 
 ```{r}
-plot(out_1[, c("E[5]", "E[10]")])
+# Convert coda output to matrix
+out_matrix <- as.matrix(out_forecast)
+
+# Extract columns corresponding to N[...]
+N_cols <- grep("^N\\[", colnames(out_matrix))
+N_samples <- out_matrix[, N_cols]  # Each column is N[1], N[2], ..., N[Ni + 12]
+
+# Confirm dimension
+dim(N_samples)  # should be (n.iter * n.chains) rows × (Ni + 12) columns
 ```
 
-
 ```{r}
-# Combine all MCMC chains into one big matrix
-out_matrix <- do.call(rbind, out_forecast)
-
-# Now safely grab all X values (latent states)
-X_all <- out_matrix[, grep("^X\\[", colnames(out_matrix))]
-X_median <- apply(X_all, 2, median)
-X_CI <- apply(X_all, 2, quantile, probs = c(0.025, 0.975))
-
-# Extract future y draws
-y_all <- out_matrix[, grep("^y\\[", colnames(out_matrix))]
-
-# Only forecasted time steps
-y_pred_samples <- y_all[, (length(data$y)+1):(length(data$y)+N_forecast)]
-
-# Summarize
-y_PI <- apply(y_pred_samples, 2, quantile, probs = c(0.025, 0.975))
-y_pred_median <- apply(y_pred_samples, 2, median)
+# Compute posterior median and 95% CI for each time point
+N_median <- apply(N_samples, 2, median)
+N_CI <- apply(N_samples, 2, quantile, probs = c(0.025, 0.975))
 
 ```
 
 ```{r}
-# Time vectors
-n_obs <- length(data$y)
-full_time <- 1:(n_obs + N_forecast)
-future_time <- (n_obs + 1):(n_obs + N_forecast)
+Ni_obs <- length(dat$Date)
+Ni_total <- ncol(N_samples)
+Ni_forecast <- Ni_total - Ni_obs
 
-# Plot base
-plot(full_time, X_median, type = 'l', lwd = 2, col = "blue",
-     ylim = c(0, max(c(X_CI[2,], y_PI[2,])) * 1.1), ylab = "N", xlab = "time")
+# Extend date vector 12 months forward
+future_dates <- seq(from = max(dat$Date) + 1, by = "month", length.out = Ni_forecast)
+all_dates <- c(dat$Date, future_dates)
 
-# Credible interval ribbon for latent state
-polygon(c(full_time, rev(full_time)),
-        c(X_CI[1,], rev(X_CI[2,])),
+# Split CI and median into observed + forecast parts
+X_median_obs <- N_median[1:Ni_obs]
+X_CI_obs <- N_CI[, 1:Ni_obs]
+
+X_median_forecast <- N_median[(Ni_obs + 1):Ni_total]
+X_CI_forecast <- N_CI[, (Ni_obs + 1):Ni_total]
+
+```
+
+
+```{r}
+# Base plot
+plot(all_dates, N_median, type = 'n', ylim = c(-100, max(N_CI[2,]) * 1.1),
+     ylab = "N", xlab = "Date")
+
+# 95% CI for observed
+polygon(c(dat$Date, rev(dat$Date)),
+        c(X_CI_obs[1,], rev(X_CI_obs[2,])),
         col = rgb(0, 0, 1, 0.2), border = NA)
 
-# Predictive interval ribbon over forecasts only
-polygon(c(future_time, rev(future_time)),
-        c(y_PI[1,], rev(y_PI[2,])),
-        col = rgb(0, 0, 0, 0.2), border = NA)
+# 95% CI for forecast
+polygon(c(future_dates, rev(future_dates)),
+        c(X_CI_forecast[1,], rev(X_CI_forecast[2,])),
+        col = rgb(1, 0, 0, 0.2), border = NA)
 
-# Add median latent state again
-lines(full_time, X_median, col = "blue", lwd = 2)
+# Median lines
+lines(dat$Date, X_median_obs, col = "blue", lwd = 2)
+lines(future_dates, X_median_forecast, col = "red", lwd = 2, lty = 2)
 
-# Add observed points
-points(1:n_obs, data$y, pch = 21, bg = "white")
+# Observed data points
+points(dat$Date, data$y, pch = 21, bg = "white")
 
-# Add vertical line at forecast boundary
-abline(v = n_obs + 0.5, lty = 2)
+# Forecasted points
+points(future_dates, X_median_forecast, pch = 4, bg = "red", col = "red")
 
-# Median forecasted observation values
-y_pred_median <- apply(y_pred_samples, 2, median)
-
-# Add forecast points (solid blue triangles)
-points(future_time, y_pred_median, pch = 17, col = "blue")
-
+# Legend
 legend("topleft",
-       legend = c("Median latent state", "Observed counts",
-                  "Forecasted counts", "95% Credible Interval", "95% Predictive Interval"),
-       col = c("blue", "black", "blue", NA, NA),
-       lwd = c(2, NA, NA, NA, NA),
-       pch = c(NA, 21, 17, NA, NA),
-       pt.bg = c(NA, "white", NA, NA, NA),
-       fill = c(NA, NA, NA, rgb(0, 0, 1, 0.2), rgb(0, 0, 0, 0.2)),
+       legend = c("Observed Median", "Forecast Median", "Observed Data", "95% CI (Observed)", "95% CI (Forecast)"),
+       col = c("blue", "red", "black", NA, NA),
+       lwd = c(2, 2, NA, NA, NA),
+       lty = c(1, 2, NA, NA, NA),
+       pch = c(NA, NA, 21, NA, NA),
+       pt.bg = c(NA, NA, "white", NA, "red"),
+       fill = c(NA, NA, NA, rgb(0, 0, 1, 0.2), rgb(1, 0, 0, 0.2)),
        border = c(NA, NA, NA, NA, NA),
-       bty = "n", cex = 0.8)
+       bty = "n",
+       cex = 0.8)
 
 ```
+
+
 
