@@ -97,9 +97,9 @@ model{
 
   ## priors
   ## tau (time between steps) from the dataframe
-  K <- 500
+  K ~ dnorm(300,0.01)
   r ~ dnorm(0,0.01)
-  sigma ~ dgamma(0.1,0.1)
+  sigma ~ dgamma(0.1,0.1) ## sigma is E's precision for one month
   
   N[1] ~ dnorm(N_ic, tau_N_ic)  # Latent state initial value
   N_ic ~ dnorm(0, 0.1)        # Prior for initial state
@@ -107,9 +107,10 @@ model{
   
   ## process model
     for(i in 2:Ni){
-      tau_E[i] <- sigma*sqrt(2*tau[i])
+      #tau_E[i] <- sigma*sqrt(2*tau[i])
+      tau_E[i] <- sigma^tau[i]   # sigma is multiplicative for multiple months
       E[i] ~ dnorm(0, tau_E[i])
-      N[i] <- ((K*N[i-1]) / (N[i-1] + (K-N[i-1]))*exp(-r*tau[i])) + E[i]
+      N[i] <- max(0,((K*N[i-1]) / (N[i-1] + (K-N[i-1]))*exp(-r*tau[i])) + E[i])
     }
   
   ## data model
@@ -134,7 +135,7 @@ And here we have the actual model running step. You can see that I have a lot of
 
 ```{r}
 out_1 <- coda.samples(model = j.model,
-                      variable.names = c("r", "y", "E", "N", "sigma"),
+                      variable.names = c("r", "E", "N", "K", "sigma"),
                       n.iter = 150000,
                       burnin = 10000)
 
@@ -142,48 +143,35 @@ out_1 <- coda.samples(model = j.model,
 
 
 ```{r}
-plot(out_1[, c("r", "E[5]", "E[10]")])
+plot(out_1[, c("r", "K", "sigma")])
 ```
 
 ```{r}
-plot(out_1[, c("sigma")])
+plot(out_1[, c("N[5]", "N[10]", "N[15]")])
 ```
-
 ```{r}
-gelman.plot(out_1[, c("r", "sigma")])
+plot(out_1[, c("E[5]", "E[10]", "E[15]")])
 ```
 
-
-```{r}
-#gelman.plot(out_1[, c("y[5]", "y[10]", "y[15]")])
-
-# the file won't knit if this line runs -- but here is the error i get:
-
-#******* Error: *******
-#Cannot compute Gelman & Rubin's diagnostic for any chain 
-#segments for variables y[5] y[10] y[15] 
-#This indicates convergence failure
-
-```
 
 ```{r}
 gelman.plot(out_1[, c("E[5]", "E[10]", "E[15]")])
 ```
 
+```{r}
+gelman.plot(out_1[, c("r", "K", "sigma")])
+```
 
-None of these look like they're converging to me except for the process error terms. The y terms are so bad that the gelman function can't even plot them.
+
 
 
 ```{r}
-gelman.diag(out_1[, c("r", "sigma")])
+gelman.diag(out_1[, c("r", "sigma", "K")])
 ```
-
 ```{r}
-#gelman.diag(out_1[, c("y[5]", "y[10]", "y[15]")])
-
-# again, file won't knit with this line. Error below:
-# Error in chol.default(W) : the leading minor of order 1 is not positive
+gelman.diag(out_1[, c("N[5]", "N[10]", "N[15]")])
 ```
+
 
 ```{r}
 gelman.diag(out_1[, c("E[5]", "E[10]", "E[15]")])
@@ -193,8 +181,8 @@ Above, confirming what the traceplots and BGR plots (and my heart) told us, none
 
 Let's look at some summary statistics:
 ```{r}
-summary(out_1[, c("y[5]", "y[10]", "y[15]",
-              "r",
+summary(out_1[, c("N[5]", "N[10]", "N[15]",
+              "r", "K", "sigma",
               "E[5]", "E[10]", "E[15]")])
 ```
 
@@ -205,8 +193,9 @@ combined_mcmc <- as.mcmc(do.call(rbind, out_1))
 # convert to data frame
 params_df <- as.data.frame(combined_mcmc)
 
-
-params_subset <- params_df[, c("E[5]", "E[10]", "E[15]", "r", "sigma")]
+params_subset <- params_df[, c("N[5]", "N[10]", "N[15]",
+              "r", "K", "sigma",
+              "E[5]", "E[10]", "E[15]")]
 head(params_subset)
 ```
 ```{r}
@@ -266,35 +255,6 @@ legend("topright",
 # add forecast interval to JAGS model
 
 ```{r}
-log_solution_forecast <- "
-model{
-
-  ## priors
-  ## tau (time between steps) from the dataframe
-  K <- 500
-  r ~ dnorm(0,0.01)
-  sigma ~ dgamma(0.1,0.1)
-  
-  N[1] ~ dnorm(N_ic, tau_N_ic)  # Latent state initial value
-  N_ic ~ dnorm(0, 0.1)        # Prior for initial state
-  tau_N_ic ~ dgamma(0.1, 0.1)   # Precision on initial state
-  
-  ## process model
-    for(i in 2:Ni){
-      tau_E[i] <- sigma*sqrt(2*tau[i])
-      E[i] ~ dnorm(0, tau_E[i])
-      N[i] <- ((K*N[i-1]) / (N[i-1] + (K-N[i-1]))*exp(-r*tau[i])) + E[i]
-    }
-  
-  ## data model
-    for(i in 1:Ni){
-      y[i] ~ dpois(max(0.001, N[i]))  # Ensures positive values only
-    }
-}
-"
-```
-
-```{r}
 N_forecast <- 12
 Ni_obs <- length(dat$tick)
 
@@ -328,17 +288,14 @@ j.model <- jags.model(
 
 out_forecast <- coda.samples(
   model = j.model,
-  variable.names = c("r", "y", "E", "N", "sigma"),
-  n.iter = 5000,
-  burnin = 1000
+  variable.names = c("r", "E", "N", "K", "sigma"),
+  n.iter = 150000,
+  burnin = 10000
 )
 
 
 ```
 
-```{r}
-plot(out_forecast[, c("r", "E[5]", "E[10]")])
-```
 
 ```{r}
 # Convert coda output to matrix
@@ -380,7 +337,7 @@ X_CI_forecast <- N_CI[, (Ni_obs + 1):Ni_total]
 
 ```{r}
 # Base plot
-plot(all_dates, N_median, type = 'n', ylim = c(-100, max(N_CI[2,]) * 1.1),
+plot(all_dates, N_median, type = 'n', ylim = c(-50, max(N_CI[2,]) * 1.1),
      ylab = "N", xlab = "Date")
 
 # 95% CI for observed
