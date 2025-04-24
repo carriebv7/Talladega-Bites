@@ -441,3 +441,47 @@ params <- as.matrix(params_df)
 param.mean <- apply(params, 2, mean) 
 
 
+```
+
+We want to write a function that plots just the CI around our known data
+```{r}
+plot.run <- function(){
+# Base plot
+plot(dat$Date, X_median, type = 'l', lwd = 2, col = "blue", ylim = c(-100, max(X_CI[2,]) * 1.1),
+     ylab = "N", xlab = "Date")
+# 95% Credible interval as blue ribbon
+polygon(c(dat$Date, rev(dat$Date)),
+        c(X_CI[1,], rev(X_CI[2,])),
+        col = rgb(0, 0, 1, 0.2), border = NA)
+# Add median line again on top of ribbon
+lines(dat$Date, X_median, col = "blue", lwd = 2)
+# Observed data points
+points(dat$Date, data$y, pch = 21, bg = "white")
+}
+```
+
+```{r}
+plot.run()
+```
+
+
+
+I don't think we need this with Nick's param.mean
+
+Trying to figure out how to write this function with our time steps
+- I think the tau[t] should work in that aspect
+- I am just concerned about the [,t-1] but I was trying to follow the format of the function that was in the TBL
+- I also don't know if it makes sense to have generalize the number of ticks being predicted, it may only make sense to do that for the process error
+```{r}
+forecastN <- function(N_ic,K,r,sigma,tau_N_ic, n=n){
+  N_store <- matrix(NA,n,NT)  ## storage
+  Nprev <- N_ic           ## initialize
+  for(t in 1:NT){
+    N = pmax(0,((K*N[,t-1]) / (N[,t-1] + (K-N[,t-1]))*exp(-r*tau[t])) + E[,t]) #calculate # ticks
+    tau_E[,t] = sigma*tau[t]  
+    E[,t] = rnorm(0,1/tau_E[,t])
+    
+  }
+  return(N)
+}
+```
