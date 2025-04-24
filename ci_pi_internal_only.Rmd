@@ -375,5 +375,69 @@ legend("topleft",
 
 ```
 
+Now, we have to partition our uncertainty. The median line above is our deterministic prediction. We will zoom in on 2023 and onward in the plot to better see our uncertainty, and take out the confidence interval for the forecasting period from before. 
+
+```{r}
+dat$Date <- as.Date(paste0(dat$month.year, "-01"))
+# Define cutoff date
+cutoff_date <- as.Date("2023-01-01")
+
+# Filter indices for zooming
+zoom_idx_all <- which(all_dates >= cutoff_date)
+zoom_idx_obs <- which(dat$Date >= cutoff_date)
+zoom_idx_forecast <- which(future_dates >= cutoff_date)
+
+zoomed_plot <- function() {
+  # Base plot (zoomed)
+  plot(all_dates[zoom_idx_all], N_median[zoom_idx_all], type = 'n',
+       ylim = c(-50, max(N_CI[2, zoom_idx_all]) * 1.1),
+       ylab = "N", xlab = "Date")
+  
+  # 95% CI for observed
+  polygon(c(dat$Date[zoom_idx_obs], rev(dat$Date[zoom_idx_obs])),
+          c(X_CI_obs[1, zoom_idx_obs], rev(X_CI_obs[2, zoom_idx_obs])),
+          col = rgb(0, 0, 1, 0.2), border = NA)
+
+  # Median lines
+  lines(dat$Date[zoom_idx_obs], X_median_obs[zoom_idx_obs], col = "blue", lwd = 2)
+  lines(future_dates[zoom_idx_forecast], X_median_forecast[zoom_idx_forecast], col = "red", lwd = 2, lty = 2)
+
+  # Observed data points
+  points(dat$Date[zoom_idx_obs], data$y[zoom_idx_obs], pch = 21, bg = "white")
+
+  # Forecasted points
+  points(future_dates[zoom_idx_forecast], X_median_forecast[zoom_idx_forecast], pch = 4, bg = "red", col = "red")
+
+  # Legend
+  legend("topleft",
+         legend = c("Observed Median", "Forecast Median", "Observed Data", "95% CI (Observed)", "95% CI (Forecast)"),
+         col = c("blue", "red", "black", NA, NA),
+         lwd = c(2, 2, NA, NA, NA),
+         lty = c(1, 2, NA, NA, NA),
+         pch = c(NA, NA, 21, NA, NA),
+         pt.bg = c(NA, NA, "white", NA, "red"),
+         fill = c(NA, NA, NA, rgb(0, 0, 1, 0.2), rgb(1, 0, 0, 0.2)),
+         border = c(NA, NA, NA, NA, NA),
+         bty = "n",
+         cex = 0.8)
+}
+zoomed_plot()
+```
+
+Let's start by partitioning out the initial condition uncertainty.
+
+```{r}
+## Initial settings
+Nmc = 1000            ## Number of Monte Carlo draws
+NT = length(dat$tick) ## Length of time (same as number of observed ticks)
+time = 1:NT           ## Time vector for plotting
+time_forecast = (NT + 1):(NT + 12) ## Forecast time points
+ylim = c(0, max(dat$tick) * 1.1) ## Set y-range for plotting
+trans = 0.8           ## Transparency for plot shading
+N.cols <- c("black", "blue", "red", "green") ## Colors for plotting
+
+## For forward simulation, let's use the average of the parameters from the posterior distribution
+params <- as.matrix(params_df) 
+param.mean <- apply(params, 2, mean) 
 
 
