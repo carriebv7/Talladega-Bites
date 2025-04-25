@@ -60,36 +60,28 @@ model{
 #mu, non-informative prior (high variance)
 mu ~ dnorm(0, 1 / 1000)
 
-tau_t ~ dgamma(1, 0.1)       #gamma prior on precision (shape 1, rate 0.1)
+tau_t ~ dgamma(0.1, 0.1)
 
-S ~ dgamma(0.1,0.1)   #parameter of precision
-tau <- 1 / (pow(S, 2)) #define tau with S, part of process model
-
-#data model
-for(i in 1:n){
- count[i] ~ dnorm(Ex[i],tau)   #tick count as a normal distribution with mean Ex[i] defined below
- Ex[i] <- mu + alpha_t[month[i]]   #Ex[i] as a function of global mean plus random month effect
+S ~ dgamma(0.1,0.1)
+tau <- 1 / (pow(S, 2))
+ 
+ for(i in 1:n){
+ count[i] ~ dnorm(Ex[i],tau)
+ Ex[i] <- mu + alpha_t[month[i]]
  }
  
  for(t in 1:nt){
-  alpha_t[t] ~ dnorm(0,tau_t)		## random month effect (part of process model)
+  alpha_t[t] ~ dnorm(0,tau_t)		## random month effect
 }
 }
 "
-
-
 #run JAGS
 tall.null.jags <- jags.model(file = textConnection(TALL_null),
                       data = TALL_list,
                       n.chains = 3)
-#remove burn in at 1700
-burn_in <- 1700
-update(tall.null.jags, n.iter = burn_in)
-
 tall.null.out <- coda.samples(model = tall.null.jags,
                          variable.names = c("mu","S", "alpha_t", "tau_t"),
-                         n.iter = 10000)
-
+                         n.iter = 1000)
 
 #summary stats/correlation
 summary(tall.null.out)

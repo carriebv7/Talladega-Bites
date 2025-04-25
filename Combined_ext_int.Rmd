@@ -14,7 +14,6 @@ library(neon4cast)
 library(lubridate)
 library(rMR)
 library(arrow)
-library(rjags)
 require(ggplot2)
 forecast_date <- lubridate::as_date("2016-01-01")  
 
@@ -36,6 +35,7 @@ TALL_ticks$year <- year(TALL_ticks$datetime)
 
 ```{r}
 # wrangled in python, will update when i turn the .ipynb into R script -- PG
+
 weather_data <- read_csv("monthly_avg_temp.csv")
 
 ```
@@ -53,42 +53,23 @@ combined_data <- TALL_ticks %>%
   left_join(weather_data, by = c("month_year" = "month-year")) %>%
   drop_na(monthly_avg)
 
-# view result
+# View the result
 head(combined_data)
+
+
 ```
 
-# Quick Model Summary
+X is a storage vessel, check latent state space TBL for the prior 
+X1 is initial condition - X2, X3, etc will be filled in with MCMC
+initial conditions (priors)
 
-For our combined internal and external factors model, we estimate mean tick count at time *i* (X[i]) using a carrying capacity model (density dependence as an internal factor) where **K** (carrying capacity) and **r** (growth rate) are dependent on **temperature** (our chosen external factor, for a start) and the state equation includes a term for **process error** (E). 
-
-$$
-X_i = r_i \cdot X_{i-1} \cdot \left(1 - \frac{X_{i-1}}{K_i} \right) + E_i
-$$
-$$
-r_i = \beta_0 + \beta_1 \cdot \text{temp}
-$$
-
-$$
-K_i = \exp(\beta_0 + \beta_1 \cdot \text{temp})
-$$
-$$
-E_i \sim \text{Normal}(0, \tau)
-$$
-$$
-\tau \sim \text{Gamma}(0.1, 0.1)
-$$
-
-To fit the model to historical data, we need months where we have both a tick count and a mean temperature, which is why you see me dropping rows missing one or the other in the code blocks above. Below, I define the model in JAGS-speak. Note that process error (E), r, and K are defined for each model loop. B0, B1 are the temperature effects on the rate variable, and B2, B3 are the temperature effects on the K, which shouldn't be changing, so they are not defined in each loop. We also have priors on the initial conditions at X[1], since at the first time point, we aren't sure what the ticks or temp at t-1 were.
-
-r and K are linear relationships for now, but that may have to be adjusted. I have also wrapped K in an exponential function to avoid any negative values. I initially just put a max(0.001) term on it, but that introduced issues with the traceplots (the chains were getting hung at 0.001); using exp() gives the distribution smoother approach to 0 and allows the MCMC to keep running more smoothly.
+y and temp will come from data, defined when you call JAGS
 
 ```{r}
 combined_logistic <- "
 model{
 
   ## priors
-  x_ic ~ dnorm(0,0.1)      ## uninformative prior for initial condition of state equation
-  tau_ic ~ dgamma(0.1,0.1)  ## uninformatiev prior for precision of ic of state
   
   X[1] ~ dnorm(x_ic,tau_ic) ## prior on initial condition, x_ic and tau_ic need to be defined in data
   tau ~ dgamma(0.1,0.1)     ## precision for process error
@@ -102,144 +83,49 @@ model{
 
   ## process model
     for(i in 2:Ni){
-      E[i] ~ dnorm(0,tau)                    ## process error (normally distributed with tau precision)
-      r[i] <- B0 + B1*temp[i]                   ## rate given temp
-      K[i] <- exp(B2 + B3 * temp[i])  # ensures positivity without a hard bound (thank u ChatGPT)
-      X[i] <- X[i-1] + r[i]*X[i-1]*(1 - X[i-1]/K[i]) + E[i] ## state equation (logistic growth with process noise)
+      E[i] ~ dnorm(0,tau)                                      ## process error (normally distributed with tau precision)
+      r[i] <- B0 + B1*temp[i]                                  ## rate given temp
+      K[i] <- max(0.001, B2 + B3 * temp[i])                    ## Prevents zero/negative values, carrying capacity given temp
+      X[i] <- X[i-1] + r[i]*X[i-1]*(1 - X[i-1]/K[i]) + E[i]    ## state equation (logistic growth with process noise)
     }
   
   ## data model
     for(i in 1:Ni){
-      y[i] ~ dpois(max(0.001, X[i]))  # Ensures positive values only
+      y[i] ~ dpois(max(0.001, X[i]))  # Ensures positive values
+
     }
+  
 }
 "
+
 ```
 
-
-Here I am defining data for the model and initializing it in JAGS. Note that I round the tick counts (y) to integers, since we are using a poisson distribution for y[i]. 
 ```{r}
 data <- list(y=combined_data$observation, Ni=length(combined_data$observation),      ## tick data
-             temp=combined_data$monthly_avg               ## weather inputs
+             temp=combined_data$monthly_avg,               ## weather inputs
+             x_ic=log(1000),tau_ic=100                   ## initial condition priors
              )
 data$y <- round(data$y)  # Round values to integers
 
 j.model   <- jags.model (file = textConnection(combined_logistic),
                              data = data,
-                             n.chains = 5)
+                             n.chains = 3)
 ```
 
-And here we have the actual model running step. You can see that I have a lot of iterations and a burn-in period to help with convergence (which we're still not achieving with most, if not all, of the variables).
 
 ```{r}
 out_1   <- coda.samples (model = j.model,
-                          variable.names = c("K","r","y", "B0", "B1", "B2", "B3", "E"),
-                          n.iter = 50000,
-                          burnin=5000)
+                            variable.names = c("K","r","y"),
+                                n.iter = 5000)
 ```
-
-
-```{r}
-plot(out_1[, c("B0", "B1")])
-```
-
-B0 and B1 traceplots look awful -- the MCMC chains are having issues converging.
-
-
-```{r}
-plot(out_1[, c("B2", "B3")])
-```
-
-Same goes for B2 and B3. I will note that the magnitude of B2 (intercept temp term for K) is on a different order of magnitude than any of the other temp terms, which is interesting but also untrustworthy if nothing is converging.
 
 ```{r}
 plot(out_1[, c("r[5]", "r[10]", "r[15]")]) # just looking at a few since plotting them all breaks this line
 ```
 
-We (once again) see issues with convergence in the rate term.
-
 ```{r}
-plot(out_1[, c("K[5]", "K[10]", "K[15]")])
-```
-
-And some interesting dynamics nonconvergence dynamics in the K term. I am happy to see that it is changing between model runs, which I would expect to be true in a biological sense given how much the y varies between months.
-
-```{r}
-plot(out_1[, c("E[5]", "E[10]", "E[15]")])
-```
-
-Wow! I am so glad to see some fuzzy caterpillars! What's not great is how large the process error is compared to our other variables. :') That's saying the unpredictability in the biological process is very high. There is a reason I suspect this is happening -- I'll talk more about it in the write up at the end.
-
-Okay now we're looking at official convergence metrics for the variables:
-
-```{r}
-gelman.plot(out_1[, c("r[5]", "r[10]", "r[15]")])
-```
-
-```{r}
-gelman.plot(out_1[, c("K[10]", "K[15]")])
-```
-
-```{r}
-#gelman.plot(out_1[, c("y[5]", "y[10]", "y[15]")])
-
-# the file won't knit if this line runs -- but here is the error i get:
-
-#******* Error: *******
-#Cannot compute Gelman & Rubin's diagnostic for any chain 
-#segments for variables y[5] y[10] y[15] 
-#This indicates convergence failure
-
-```
-
-```{r}
-gelman.plot(out_1[, c("E[5]", "E[10]", "E[15]")])
-```
-
-
-None of these look like they're converging to me except for the process error terms. The y terms are so bad that the gelman function can't even plot them.
-
-```{r}
-gelman.diag(out_1[, c("B0", "B1", "B2", "B3")])
+plot(out_1[, c("K[5]", "K[10]", "K[15]")]) # just looking at a few since plotting them all breaks this line
 ```
 ```{r}
-gelman.diag(out_1[, c("K[5]", "K[10]", "K[15]",
-                      "r[5]", "r[10]"
-                      )])
+gelman.plot(out_1)
 ```
-
-```{r}
-#gelman.diag(out_1[, c("y[5]", "y[10]", "y[15]")])
-
-# again, file won't knit with this line. Error below:
-# Error in chol.default(W) : the leading minor of order 1 is not positive
-```
-
-```{r}
-gelman.diag(out_1[, c("E[5]", "E[10]", "E[15]")])
-```
-
-Above, confirming what the traceplots and BGR plots (and my heart) told us, none of the BGR metrics are below 1.1, which tells us the variables have not converged. :( Except for our superstar E (process error) term! It's nice to have a positive control for what a converged variable might look like, if nothing else.
-
-Let's look at some summary statistics:
-```{r}
-summary(out_1[, c("y[5]", "y[10]", "y[15]",
-              "K[5]", "K[10]", "K[15]",
-              "r[5]", "r[10]", "r[15]",
-              "B0", "B1", "B2", "B3",
-              "E[5]", "E[10]", "E[15]")])
-```
-
-# The Write Up
-
-Our variables are not converging across the board (except for process error), despite a high number of chains and iterations. I think this is due, in part, to a few issues. The first being that we have super super uninformative priors for most of our variables. I think to improve model accuracy, I would try more informative priors -- maybe based on the averages that I see from these variables? Or we could do a lit review and try to estimate it from there. 
-
-Another issue is that we have non-uniform time steps between data points. For example, the first five dates of the ticks data look like this:
-
-```{r}
-head(ticks_data$datetime)
-```
-
-We go from 4/20 - 5/11 (21 days) in rows 1 and 2 to 6/01 - 6/08 (7 days) in rows 3 and 4. The model is assuming an equal time between all data points; to fix this, we could add a loop in the model that runs, recursively, the number of days between each time point (i.e. would run 21 times between row 1 and 2 vs. 7 times between rows 3 and 4). I think this problem is partially the source of a high process error in the model; the system seems unpredictable to the model because it's not getting the full scope of the data and it's stitching together an incomplete picture. 
-
-I would like to try implementing these fixes before the next project milestone, but unfortunately wasn't able to complete them before the deadline. @ProfJody -- what are your thoughts? Do you agree with the convergence maybe being caused by these issues and the proposed fixes? 

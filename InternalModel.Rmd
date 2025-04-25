@@ -57,7 +57,7 @@ model{
 
 ```{r}
 ## specify initial values
-nchain <- 3
+nchain <- 5
 inits <- list()
 for(i in 1:nchain){
   inits[[i]] <- list(
@@ -88,7 +88,7 @@ jags_model <- jags.model(file = textConnection(tall_internal),
 
 jags.out <- coda.samples(model = jags_model,
                          variable.names = c("r", "K", "X", "tau_proc"),
-                         n.iter = 20000)
+                         n.iter = 150000)
 ```
 
 ```{r}

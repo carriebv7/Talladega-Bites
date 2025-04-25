@@ -23,8 +23,12 @@ library(scales)
 ```
 
 # Tick Data
+<<<<<<< HEAD
+We loaded the tick-count dataset for Talledaga (monthly_tick_temp.csv), which was manually parsed from the raw data to extract monthly counts. The total observations are 58. 
+=======
 (manually parsed)
 
+>>>>>>> ac200aaed0cf2f6e480ac1e902ba6aa520fb43a5
 ```{r}
 dat <- read.csv("monthly_tick_temp.csv")
 dat <- dat[1:58, c("month.year", "tick")]# # drops unneeded columns and NA rows
@@ -44,6 +48,43 @@ $$
 X_i = r \cdot X_{i-1} \cdot \left(1 - \frac{X_{i-1}}{K} \right) + E_i
 $$
 
+<<<<<<< HEAD
+SC: just in case I mess something up, I'm adding this stuff separately.
+
+Process Model:
+We represent the true monthly tick abundance (N) with a discrete-time logistic-growth process plust stochastic noise. At each month i, the population evoves according to:
+$$
+\begin{aligned}
+N_{\mathrm{ticks}}[i] 
+  &= \frac{K\,N_{\mathrm{ticks}}[i-1]}
+         {N_{\mathrm{ticks}}[i-1] + (K - N_{\mathrm{ticks}}[i-1])\,\exp^{-r\,\tau[i]}}
+     + E[i], \\[15pt]
+where \\[5pt]
+r           &\sim \mathrm{Normal}(0,\,0.01)\\
+K           &\sim \mathrm{Normal}(300,\,0.01)\\
+E[i]        &\sim \mathrm{Normal}\bigl(0,t_{E}[i]\bigr)\\
+t_{E}[i] &\leftarrow \sigma^{\tau[i]}\\
+\sigma      &\sim \mathrm{Gamma}(0.1,\,0.1)
+\end{aligned}
+$$
+N = estimated mean number of ticks per month
+K = carrying capacity
+r = intrinsic growth rate
+Tau = time step
+
+Here, Tau[i] is the elapsed time between observations, ensuring the model accomodates any irregular spacing. This formulation captures density dependence, time-step scaling growth, and random fluctuations around the deterministic trend.
+
+Data Model:
+We link the latent abundance to our observed counts y[i] through a Poisson observation model:
+$$
+y[i]\sim pois(N_{\mathrm{ticks}})
+$$
+This assumes that, conditional on the true mean of N_ticks[i], the observed number of ticks in month i arises from a Poisson process and ensures our tick count is not negative.
+
+#Data formatting for JAGS input
+We convert the month.year strings into proper Date objects (first of each month), compute the month‐to‐month intervals to scale the process noise (TimeStep), round the tick counts to integers for the Poisson model, and then bundle the key components—tick counts, number of observations, and time steps into a list for JAGS.
+=======
+>>>>>>> ac200aaed0cf2f6e480ac1e902ba6aa520fb43a5
 ```{r}
 # Convert 'month.year' to a Date object
 dat$Date <- as.Date(paste0(dat$month.year, "-01"))
@@ -51,16 +92,29 @@ dat$Date <- as.Date(paste0(dat$month.year, "-01"))
 # Calculate time step differences in months
 dat$TimeStep <- c(NA, diff(as.numeric(format(dat$Date, "%Y")) * 12 + as.numeric(format(dat$Date, "%m"))))
 
+<<<<<<< HEAD
+# Ensure integeger counts for Poisson likelihood
+dat$tick <- round(dat$tick)
+=======
 dat$tick <- round(dat$tick)
 
+>>>>>>> ac200aaed0cf2f6e480ac1e902ba6aa520fb43a5
 head(dat)
 ```
 
 ```{r}
+<<<<<<< HEAD
+# Prepare data list for JAGS
+=======
+>>>>>>> ac200aaed0cf2f6e480ac1e902ba6aa520fb43a5
 tick <- dat$tick
 data <- list(tick = tick, n = length(t))
 ```
 
+<<<<<<< HEAD
+We then implement the above model in JAGS, specifying priors for K, r, Sigma, and the latent initial state, looping through the process‐model update with multiplicative time‐step noise, and linking to the data via a Poisson likelihood.
+=======
+>>>>>>> ac200aaed0cf2f6e480ac1e902ba6aa520fb43a5
 ```{r}
 log_solution_model <- "
 model{
@@ -90,6 +144,11 @@ model{
 "
 ```
 
+<<<<<<< HEAD
+#JAGS model initialization. 
+Next, we bundle the processed data into a list matching the variables expected by the JAGS script, namely: the observed counts y, the number of time points Ni, and the month‐to‐month intervals Tau. We then compile the model defined in log_solution_model and initialize 5 MCMC chain.
+=======
+>>>>>>> ac200aaed0cf2f6e480ac1e902ba6aa520fb43a5
 ```{r}
 data <- list(y=dat$tick, 
              Ni=length(dat$tick), 
@@ -101,8 +160,12 @@ j.model   <- jags.model (file = textConnection(log_solution_model),
                              n.chains = 5)
 ```
 
+<<<<<<< HEAD
+And here we have the actual model running step. We're drawing from 150,000 iterations per chain to ensure convergence and discarding the first 10,000 as burn-in to reduce dependence on initial values. Convergence diagnostics are assessed in the following sections. 
+=======
 And here we have the actual model running step. You can see that I have a lot of iterations and a burn-in period to help with convergence (which we're still not achieving with most, if not all, of the variables).
 
+>>>>>>> ac200aaed0cf2f6e480ac1e902ba6aa520fb43a5
 ```{r}
 out_1 <- coda.samples(model = j.model,
                       variable.names = c("r", "E", "N", "K", "sigma"),
@@ -111,7 +174,12 @@ out_1 <- coda.samples(model = j.model,
 
 ```
 
+<<<<<<< HEAD
+#Convergence diagnostics and posterior distributions:
+We visually inspected convergence and stationarity by plotting trace and density plots for the key parameters (r, K, Sigma), three latent states (N[5], N[10], N[15]), and three process‐noise draws (E[5], E[10], E[15]). Well‐mixed, “hairy caterpillar” trace plots with no apparent trends and smooth, unimodal density curves indicate that the chains have likely converged and explored the posterior distributions adequately.
+=======
 
+>>>>>>> ac200aaed0cf2f6e480ac1e902ba6aa520fb43a5
 ```{r}
 plot(out_1[, c("r", "K", "sigma")])
 ```
@@ -125,7 +193,12 @@ plot(out_1[, c("E[5]", "E[10]", "E[15]")])
 ```
 
 
+<<<<<<< HEAD
+#Convergence confirmation via Gelman–Rubin diagnostics.
+We computed potential‐scale‐reduction factors for both key parameters (r, K, sigma) and representative latent‐state and noise draws (N[5], N[10], N[15], E[5], E[10], E[15]). In the Gelman plots, the median and 97.5%‐quantile shrink factors quickly fall to ~1 and remain stable throughout the chains. The tabulated PSRF point estimates and upper 97.5% credible limits are all ≤ 1.01, with a multivariate PSRF of exactly 1, indicating that all chains have mixed and converged successfully.
+=======
 # Diagnostics
+>>>>>>> ac200aaed0cf2f6e480ac1e902ba6aa520fb43a5
 ```{r}
 gelman.plot(out_1[, c("E[5]", "E[10]", "E[15]")])
 ```
@@ -144,7 +217,15 @@ gelman.diag(out_1[, c("r", "sigma", "K",
                       )])
 ```
 
+<<<<<<< HEAD
+#Posterior summary statistics:
+A few key takeaways from the posterior summaries:
+-Intrinsic growth rate (r) has a posterior mean of ~0.18, indicating moderate density-dependent growth.
+-Carrying capacity (K) is tightly estimated around 300 ticks, closely matching our prior.
+-Process-noise precision (sigma) is small (∼0.0018), implying modest month-to-moth stochastic variability.
+=======
 # Posterior summary statistics
+>>>>>>> ac200aaed0cf2f6e480ac1e902ba6aa520fb43a5
 ```{r}
 summary(out_1[, c("r", "K", "sigma",
                   "N[5]", "N[10]", "N[15]",
@@ -163,12 +244,24 @@ params_subset <- params_df[, c("r", "K", "sigma",
                                "E[5]", "E[10]", "E[15]")]
 head(params_subset)
 ```
+<<<<<<< HEAD
+
+#Notable observations from the pairs plot:
+-A slight negative correlation between r and K, reflecting the usual growth‐rate vs. carrying‐capacity trade‐off.
+-A positive correlations among the latent states (N[5], N[10], N[15]), since each month’s abundance builds on the previous.
+-Little to no correlation between the process‐noise draws (E[i]) and the deterministic parameters (r, K, sigma).
+=======
+>>>>>>> ac200aaed0cf2f6e480ac1e902ba6aa520fb43a5
 ```{r}
 pairs(params_subset, pch = 1, cex = 0.3)
 ```
 
 # Time Series
+<<<<<<< HEAD
+The figure below shows the posterior median estimate of monthly tick count (blue line) with its 95% credible interval (blue shading) compared to the observed tick counts (white-filled circles). The model closely racks the seasonal peaks and troughs in the data. The credible intervals widen slightly where variability is greatest, which is expected as we enter stretches with missing data (e.g., over winter months). The uncertainty accumulates and the ribbon grows accordlingly.
+=======
 
+>>>>>>> ac200aaed0cf2f6e480ac1e902ba6aa520fb43a5
 ```{r}
 # Flatten MCMC output
 out_matrix <- as.matrix(out_1)
@@ -218,7 +311,11 @@ legend("topright",
 
 
 # Forecasting
+<<<<<<< HEAD
+We now extend the observed 58-month series to 12 months in the future and rerun the same JAGS model. The plot below shows the results. The blue line and shading show the posterior median and 95% CI for the historical period (through the last observed date). The dashed red line and red shading show the 12-month forecast median and its 95% CI. The forecast intervals widen substantially, reflecting notable uncertainty in our forecast.
+=======
 
+>>>>>>> ac200aaed0cf2f6e480ac1e902ba6aa520fb43a5
 ```{r}
 N_forecast <- 12
 Ni_obs <- length(dat$tick)
@@ -353,9 +450,13 @@ legend("topleft",
 ```
 
 # Uncertainty Partitioning
+<<<<<<< HEAD
+Now, we have to partition our uncertainty. The median line above is our deterministic prediction. We will zoom in on 2023 and onward in the plot to better see our uncertainty, and take out the confidence interval for the forecasting period from before. In short, this plot tells us how the model’s central tendency evolves: a quick post‐peak collapse followed by a gradual return to equilibrium, driven purely by the Beverton–Holt growth and decay term.
+=======
 
 Now, we have to partition our uncertainty. The median line above is our deterministic prediction. We will zoom in on 2023 and onward in the plot to better see our uncertainty, and take out the confidence interval for the forecasting period from before. 
 
+>>>>>>> ac200aaed0cf2f6e480ac1e902ba6aa520fb43a5
 ```{r}
 dat$Date <- as.Date(paste0(dat$month.year, "-01"))
 # Define cutoff date
@@ -388,7 +489,11 @@ zoomed_plot <- function() {
 zoomed_plot()
 ```
 ## Helper Functions
+<<<<<<< HEAD
+Now we streamline our forecasting and plotting workflow with three helper functions. First, forecastN generates an ensemble of n trajectories over steps months; at each time step it computes the Beverton–Holt projection, applies pmax(0, μ_t) to enforce non‐negativity, and advances the state. Second, calc_forecast_ci takes the resulting n × steps forecast matrix and returns both the column‐wise 2.5%/97.5% quantiles and the medians, facilitating quick access to credible intervals and central estimates. Finally, draw_env draws a shaded polygon on a time‐series plot by linking the lower and upper quantile vectors in ci with the corresponding dates, using the specified color and no border. Together, these functions let us efficiently simulate, summarize, and visualize forecast uncertainty in a few concise lines of code.
+=======
 
+>>>>>>> ac200aaed0cf2f6e480ac1e902ba6aa520fb43a5
 ```{r}
 set.seed(111)
 ##' @param IC    Vector of initial conditions (length = n)
@@ -429,8 +534,12 @@ draw_env <- function(ci, dates, col) {
 ```
 
 ## Initial condition uncertainty
+<<<<<<< HEAD
+Let's start by partitioning out the initial condition uncertainty.To isolate the contribution of uncertainty in the final latent‐state estimate alone, we sampled 1,000 draws of N[58] (the last inferred month’s abundance) from the posterior, while holding the growth rate r and carrying capacity fixed at their posterior means and omitting process noise. We then used our forecastN() function to propagate only these initial‐condition variations forward for 12 months. The resulting grey ribbon in the zoomed plot shows the 95% interval arising solely from uncertainty in the starting state, and the black line marks its median forecast under this scenario. This envelope quantifies how much of the total forecast spread is attributable purely to ambiguity in the most recent observed abundance.
+=======
 Let's start by partitioning out the initial condition uncertainty.
 
+>>>>>>> ac200aaed0cf2f6e480ac1e902ba6aa520fb43a5
 ```{r}
 posterior <- as.matrix(out_forecast)
 
@@ -458,8 +567,13 @@ lines(future_dates, N.I.ci[2,], col = "black", lwd = 1)
 ```
 
 
+<<<<<<< HEAD
+# Initial Ccondition uncertainty + Parameter uncertainty
+Now we sample 1,000 draws of N[58], r, and K from the posterior, still omitting process noise. We then forecast each draw deterministically for 12 months using our forecastN() helper. The red envelope (N.IP) captures the combined uncertainty from both the initial state and the parameters. For comparison, the grey ribbon shows the initial‐condition‐only uncertainty from the previous step.Visually, the red envelope is substantially wider than the grey one, indicating that parameter uncertainty contributes more to total forecast variance than initial‐condition ambiguity. This tells us that, although knowing the exact current tick count matters, refining our estimates of the growth rate and carrying capacity would yield the largest reduction in near‐term forecast error.
+=======
 ## Initial Ccondition uncertainty + Parameter uncertainty
 
+>>>>>>> ac200aaed0cf2f6e480ac1e902ba6aa520fb43a5
 ```{r}
 n.mc <- 1000
 steps <- 12
@@ -497,7 +611,11 @@ lines(future_dates,N.I.ci[2,],lwd=0.5)
 *Note*: we do not have any environmental drivers in our model, so calculating N.IPD will not add any additional uncertainty
 
 # Layering in process noise (N.IPDE)
+<<<<<<< HEAD
+Next we extend our uncertainty partiion by including the stochastic process noise term. We redefine forecastN() to draw each monthly abundance from a normal distribution with mean given by the Beverton–Holt projection and standard deviation, rather than a deterministic pmax(0, μ). Sampling 1,000 draws of N[58], parameters(r, K), and noise precision (σ), we propagate each trajectory forward with process noise. The resulting dark‐blue envelope (N.IPDE) shows the 95% CIs when both initial‐condition, parameter, and process‐noise uncertainties are included. Overlaid in lighter red and gray are the previous two envelopes (N.IP and N.I), which show how each additional source of uncertainty incrementally widens our forecast intervals.
+=======
 
+>>>>>>> ac200aaed0cf2f6e480ac1e902ba6aa520fb43a5
 ```{r}
 # redefine function to include process noise term
 forecastN <- function(IC, r, K, sigma, tau, n = 1000, steps = 12) {
@@ -557,8 +675,12 @@ lines(future_dates, N.I.ci[2,], lwd = 1, col = "gray40")
 ```
 
 # Layer in random effect
+<<<<<<< HEAD
+Since we don't have any random effect in the model, we're going to add some noise to our sigma term to simulate that. We draw 1,000 posterior samples of N[58], growth rate, carrying capacity, and noise precision, then multiply each noise precision by a random factor that is uniformly sampled from 0.8-1.2. using our forecastN() helper (which now injects process noise according to these perturbed noise precision values), we generate a new forecast matrix and compute its 95% CIs. The resulting orange ribbon (N.IPDEA) sits almost entirely within the dark‐blue process‐noise envelope (N.IPDE), indicating that this extra random‐effect variance contributes only marginally to total forecast uncertainty (much less so than the core process‐noise and parameter components).
+=======
 Since we don't have any random effect in the model, we're going to add some noise to our sigma term to simulate that.
 
+>>>>>>> ac200aaed0cf2f6e480ac1e902ba6aa520fb43a5
 ```{r}
 n.mc <- 1000
 steps <- 12
@@ -604,7 +726,16 @@ lines(future_dates, N.I.ci[2,], lwd = 1, col = "gray40")
 ```
 
 # Stacked Error Partitions
+<<<<<<< HEAD
+Lastly, we need to quantify and visualize how each source of uncertainty contributes to total forecast variance over the 12-month forecast. First, we compute the raw variances of the four forecast ensembles (initial‐condition only (N.I), initial + parameter (N.IP), +process noise (N.IPDE), and +random effect (N.IPDEA)) for each forecast month. We then normalize each column by its total variance and stack the resulting proportions in an area plot.
+he black layer (initial‐condition) remains present throughout but decays from its peak contribution, falling close to zero by around April.
+The blue layer (parameter uncertainty) grows quickly and dominates the forecast variance for most of the 12 months.
+The red layer (process noise) contributes noticeably only in the first few months before thinning out almost entirely.
+The green layer (random effect) starts small relative to the process noise and then slowly increases its share over time.
+Overall, narrowing our uncertainty in the growth rate and carrying capacity (the blue band) would yield the biggest gains in forecast precision.
+=======
 
+>>>>>>> ac200aaed0cf2f6e480ac1e902ba6aa520fb43a5
 ```{r}
 ### calculation of variances
 varI     <- apply(N.I,2,var)
@@ -623,3 +754,12 @@ ecoforecastR::ciEnvelope(future_dates,V.pred.rel[3,],V.pred.rel[4,],col="green")
 legend("topright",legend=c("RandomEffect","Process","Parameter","InitCond"),col=c("green", "red", "blue", "black"),lty=1,lwd=5)
 ```
 
+<<<<<<< HEAD
+#Conlcusion
+In conclusion, our time series model successfully captured the seasonal dynamics of tick count at Talladega and provided a framework for forecasting and uncertainty analysis. The process model reproduced historical peaks and troughs, while the Poisson data model ensured non-negative counts. Posterior diagnostics confirmed that key parameters (r, K, and σ) and latent states were well-identified and converged reliably in JAGS.
+
+Our 12-month ensemble forecast ultimately proved uninformative. The 95% CIs expanded so rapidly that they encompassed nearly all plausible tick-count values, yielding no clear directional trend. However, our uncertainty-partitioning analysis revealed that the forecast spread is substantially driven by parameter uncertainty in the growth rate and carrying capacity, with process noise adding only a short-term blip of variability and initial-condition uncertainty and simulated random effects remaining secondary.
+
+Moving forward, incorporating environmental drivers (e.g., temperature, humidity) or including additional or new observations as they become available could further refine our forecast and reduce uncertainty.
+=======
+>>>>>>> ac200aaed0cf2f6e480ac1e902ba6aa520fb43a5
