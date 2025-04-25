@@ -1,0 +1,657 @@
+---
+title: "combined model"
+author: "Talladega Bites"
+date: "2025-04-02"
+output: html_document
+---
+
+#Talladega Bites
+
+```{r}
+#remotes::install_github("eco4cast/neon4cast")
+library(tidyverse)
+library(neon4cast)
+library(lubridate)
+library(rMR)
+library(arrow)
+library(rjags)
+require(ggplot2)
+library(dplyr)
+library(tidyr)
+#install.packages("scales")
+library(scales)
+```
+
+# Tick Data
+We loaded the tick-count dataset for Talledaga (monthly_tick_temp.csv), which was manually parsed from the raw data to extract monthly counts. The total observations are 58. 
+
+```{r}
+dat <- read.csv("monthly_tick_temp.csv")
+dat <- dat[1:58, c("month.year", "tick")]# # drops unneeded columns and NA rows
+```
+
+```{r}
+t = dat[1:58,1] #time
+
+```
+
+
+# Quick Model Summary 
+##TODO: 
+Can someone fix this (and list what the terms are) so it's the same as what we actually have in model
+
+$$
+X_i = r \cdot X_{i-1} \cdot \left(1 - \frac{X_{i-1}}{K} \right) + E_i
+$$
+
+SC: just in case I mess something up, I'm adding this stuff separately.
+
+Process Model:
+We represent the true monthly tick abundance (N) with a discrete-time logistic-growth process plust stochastic noise. At each month i, the population evoves according to:
+$$
+\begin{aligned}
+N_{\mathrm{ticks}}[i] 
+  &= \frac{K\,N_{\mathrm{ticks}}[i-1]}
+         {N_{\mathrm{ticks}}[i-1] + (K - N_{\mathrm{ticks}}[i-1])\,\exp^{-r\,\tau[i]}}
+     + E[i], \\[15pt]
+where \\[5pt]
+r           &\sim \mathrm{Normal}(0,\,0.01)\\
+K           &\sim \mathrm{Normal}(300,\,0.01)\\
+E[i]        &\sim \mathrm{Normal}\bigl(0,t_{E}[i]\bigr)\\
+t_{E}[i] &\leftarrow \sigma^{\tau[i]}\\
+\sigma      &\sim \mathrm{Gamma}(0.1,\,0.1)
+\end{aligned}
+$$
+N = estimated mean number of ticks per month
+K = carrying capacity
+r = intrinsic growth rate
+Tau = time step
+
+Here, Tau[i] is the elapsed time between observations, ensuring the model accomodates any irregular spacing. This formulation captures density dependence, time-step scaling growth, and random fluctuations around the deterministic trend.
+
+Data Model:
+We link the latent abundance to our observed counts y[i] through a Poisson observation model:
+$$
+y[i]\sim pois(N_{\mathrm{ticks}})
+$$
+This assumes that, conditional on the true mean of N_ticks[i], the observed number of ticks in month i arises from a Poisson process and ensures our tick count is not negative.
+
+```{r}
+# Convert 'month.year' to a Date object
+dat$Date <- as.Date(paste0(dat$month.year, "-01"))
+
+# Calculate time step differences in months
+dat$TimeStep <- c(NA, diff(as.numeric(format(dat$Date, "%Y")) * 12 + as.numeric(format(dat$Date, "%m"))))
+
+dat$tick <- round(dat$tick)
+
+head(dat)
+```
+
+```{r}
+tick <- dat$tick
+data <- list(tick = tick, n = length(t))
+```
+
+```{r}
+log_solution_model <- "
+model{
+
+  ## priors
+  ## tau (time between steps) from the dataframe
+  K ~ dnorm(300,0.01)     # from our 'literature review'
+  r ~ dnorm(0,0.01)       # uninformative prior on rate
+  sigma ~ dgamma(0.1,0.1) ## sigma is E's precision for one month
+  
+  N[1] ~ dnorm(N_ic, tau_N_ic)  # Latent state initial value
+  N_ic ~ dnorm(0, 0.1)        # Prior for initial state
+  tau_N_ic ~ dgamma(0.1, 0.1)   # Precision on initial state
+  
+  ## process model
+    for(i in 2:Ni){
+      tau_E[i] <- sigma^tau[i]   # sigma is multiplicative for multiple months
+      E[i] ~ dnorm(0, tau_E[i])
+      N[i] <- max(0,((K*N[i-1]) / (N[i-1] + (K-N[i-1]))*exp(-r*tau[i])) + E[i])  # wrapped in max so E[i] doesn't drag N[i] <0
+    }
+  
+  ## data model
+    for(i in 1:Ni){
+      y[i] ~ dpois(max(0.001, N[i]))  # Ensures positive values only
+    }
+}
+"
+```
+
+```{r}
+data <- list(y=dat$tick, 
+             Ni=length(dat$tick), 
+             tau=dat$TimeStep
+             )
+
+j.model   <- jags.model (file = textConnection(log_solution_model),
+                             data = data,
+                             n.chains = 5)
+```
+
+And here we have the actual model running step. You can see that I have a lot of iterations and a burn-in period to help with convergence (which we're still not achieving with most, if not all, of the variables).
+
+```{r}
+out_1 <- coda.samples(model = j.model,
+                      variable.names = c("r", "E", "N", "K", "sigma"),
+                      n.iter = 150000,
+                      burnin = 10000)
+
+```
+
+
+```{r}
+plot(out_1[, c("r", "K", "sigma")])
+```
+
+```{r}
+plot(out_1[, c("N[5]", "N[10]", "N[15]")])
+```
+
+```{r}
+plot(out_1[, c("E[5]", "E[10]", "E[15]")])
+```
+
+
+# Diagnostics
+```{r}
+gelman.plot(out_1[, c("E[5]", "E[10]", "E[15]")])
+```
+
+```{r}
+gelman.plot(out_1[, c("r", "K", "sigma")])
+```
+
+
+
+
+```{r}
+gelman.diag(out_1[, c("r", "sigma", "K",
+                      "N[5]", "N[10]", "N[15]",
+                      "E[5]", "E[10]", "E[15]"
+                      )])
+```
+
+# Posterior summary statistics
+```{r}
+summary(out_1[, c("r", "K", "sigma",
+                  "N[5]", "N[10]", "N[15]",
+                  "E[5]", "E[10]", "E[15]")])
+```
+
+```{r}
+
+combined_mcmc <- as.mcmc(do.call(rbind, out_1))
+
+# convert to data frame
+params_df <- as.data.frame(combined_mcmc)
+
+params_subset <- params_df[, c("r", "K", "sigma",
+                               "N[5]", "N[10]", "N[15]",
+                               "E[5]", "E[10]", "E[15]")]
+head(params_subset)
+```
+```{r}
+pairs(params_subset, pch = 1, cex = 0.3)
+```
+
+# Time Series
+
+```{r}
+# Flatten MCMC output
+out_matrix <- as.matrix(out_1)
+
+# Time vector
+time <- 1:length(dat$tick)
+
+# Extract latent state samples
+X_samples <- out_matrix[, grep("^N\\[", colnames(out_matrix))]
+
+# Compute posterior summaries
+X_median <- apply(X_samples, 2, median)
+X_CI <- apply(X_samples, 2, quantile, probs = c(0.025, 0.975))
+
+```
+
+```{r}
+
+# Base plot
+plot(dat$Date, X_median, type = 'l', lwd = 2, col = "blue", ylim = c(-100, max(X_CI[2,]) * 1.1),
+     ylab = "N", xlab = "Date")
+
+# 95% Credible interval as blue ribbon
+polygon(c(dat$Date, rev(dat$Date)),
+        c(X_CI[1,], rev(X_CI[2,])),
+        col = rgb(0, 0, 1, 0.2), border = NA)
+
+# Add median line again on top of ribbon
+lines(dat$Date, X_median, col = "blue", lwd = 2)
+
+# Observed data points
+points(dat$Date, data$y, pch = 21, bg = "white")
+
+legend("topright",
+       legend = c("Median latent state", "Observed counts", "95% Credible Interval"),
+       col = c("blue", "black", NA),
+       lwd = c(2, NA, NA),
+       pch = c(NA, 21, NA),
+       pt.bg = c(NA, "white", NA),
+       fill = c(NA, NA, rgb(0, 0, 1, 0.2)),  # Add fill for CI
+       border = c(NA, NA, NA),              # No border for fill
+       bty = "n",
+       cex = 0.8)
+
+
+```
+
+
+# Forecasting
+
+```{r}
+N_forecast <- 12
+Ni_obs <- length(dat$tick)
+
+# Extend y with 12 NAs
+y_full <- c(dat$tick, rep(NA, N_forecast))
+
+# Assume constant monthly step from last timestep
+# If TimeStep is in months (e.g., 1, 2, 3...), this just extends linearly
+last_tau <- tail(dat$TimeStep, 1)
+tau_forecast <- rep(1, N_forecast)  # each new step is 1 month
+tau_full <- c(dat$TimeStep, tau_forecast)
+
+# Total time points
+Ni <- length(y_full)
+
+data_forecast <- list(
+  y = y_full,
+  tau = tau_full,
+  Ni = Ni
+)
+
+```
+
+```{r}
+j.model <- jags.model(
+  file = textConnection(log_solution_model),
+  data = data_forecast,
+  n.chains = 5
+)
+
+
+out_forecast <- coda.samples(
+  model = j.model,
+  variable.names = c("r", "E", "N", "K", "sigma"),
+  n.iter = 150000,
+  burnin = 10000
+)
+
+```
+
+
+```{r}
+# Convert coda output to matrix
+out_matrix <- as.matrix(out_forecast)
+
+# Extract columns corresponding to N[...]
+N_cols <- grep("^N\\[", colnames(out_matrix))
+N_samples <- out_matrix[, N_cols]  # Each column is N[1], N[2], ..., N[Ni + 12]
+
+# Confirm dimension
+dim(N_samples)  # should be (n.iter * n.chains) rows by (Ni + 12) columns
+```
+
+```{r}
+# Compute posterior median and 95% CI for each time point
+N_median <- apply(N_samples, 2, median)
+N_CI <- apply(N_samples, 2, quantile, probs = c(0.025, 0.975))
+
+```
+
+```{r}
+Ni_obs <- length(dat$Date)
+Ni_total <- ncol(N_samples)
+Ni_forecast <- Ni_total - Ni_obs
+
+# Extend date vector 12 months forward
+future_dates <- seq(from = max(dat$Date) + 1, by = "month", length.out = Ni_forecast)
+all_dates <- c(dat$Date, future_dates)
+
+# Split CI and median into observed + forecast parts
+X_median_obs <- N_median[1:Ni_obs]
+X_CI_obs <- N_CI[, 1:Ni_obs]
+
+X_median_forecast <- N_median[(Ni_obs + 1):Ni_total]
+X_CI_forecast <- N_CI[, (Ni_obs + 1):Ni_total]
+
+# Simulate Poisson predictive draws for forecast
+N_forecast_samples <- N_samples[, (Ni_obs + 1):Ni_total]  # latent forecasts
+
+# Matrix of predictive draws, same shape as N_forecast_samples
+Y_pred_samples <- matrix(rpois(length(N_forecast_samples),
+                               lambda = pmax(0.001, N_forecast_samples)),
+                         nrow = nrow(N_forecast_samples))
+
+
+Y_PI_forecast <- apply(Y_pred_samples, 2, quantile, probs = c(0.025, 0.975))
+
+```
+
+
+```{r}
+# Base plot
+plot(all_dates, N_median, type = 'n', ylim = c(-50, max(N_CI[2,]) * 1.1),
+     ylab = "N", xlab = "Date")
+
+# 95% CI for observed
+polygon(c(dat$Date, rev(dat$Date)),
+        c(X_CI_obs[1,], rev(X_CI_obs[2,])),
+        col = rgb(0, 0, 1, 0.2), border = NA)
+
+# 95% CI for forecast
+polygon(c(future_dates, rev(future_dates)),
+        c(X_CI_forecast[1,], rev(X_CI_forecast[2,])),
+        col = rgb(1, 0, 0, 0.2), border = NA)
+
+# Median lines
+lines(dat$Date, X_median_obs, col = "blue", lwd = 2)
+lines(future_dates, X_median_forecast, col = "red", lwd = 2, lty = 2)
+
+# Observed data points
+points(dat$Date, data$y, pch = 21, bg = "white")
+
+# Forecasted points
+points(future_dates, X_median_forecast, pch = 4, bg = "red", col = "red")
+
+# Legend
+legend("topleft",
+       legend = c("Observed Median", "Forecast Median", "Observed Data",
+                  "95% CI (Observed)", "95% CI (Forecast)"),
+       col = c("blue", "red", "black", NA, NA),
+       lwd = c(2, 2, NA, NA, NA),
+       lty = c(1, 2, NA, NA, NA),
+       pch = c(NA, NA, 21, NA, NA),
+       pt.bg = c(NA, NA, "white", NA, "red", NA),
+       fill = c(NA, NA, NA,
+                rgb(0, 0, 1, 0.2),
+                rgb(1, 0, 0, 0.2),
+                rgb(1, 0.7, 0, 0.2)),
+       border = NA, bty = "n", cex = 0.8)
+
+```
+
+# Uncertainty Partitioning
+
+Now, we have to partition our uncertainty. The median line above is our deterministic prediction. We will zoom in on 2023 and onward in the plot to better see our uncertainty, and take out the confidence interval for the forecasting period from before. 
+
+```{r}
+dat$Date <- as.Date(paste0(dat$month.year, "-01"))
+# Define cutoff date
+cutoff_date <- as.Date("2023-01-01")
+
+# Filter indices for zooming
+zoom_idx_all <- which(all_dates >= cutoff_date)
+zoom_idx_obs <- which(dat$Date >= cutoff_date)
+zoom_idx_forecast <- which(future_dates >= cutoff_date)
+
+zoomed_plot <- function() {
+  # Base plot (zoomed)
+  plot(all_dates[zoom_idx_all], N_median[zoom_idx_all], type = 'n',
+       ylim = c(-50, max(N_CI[2, zoom_idx_all]) * 1.1),
+       ylab = "N", xlab = "Date")
+  
+  # 95% CI for observed
+  polygon(c(dat$Date[zoom_idx_obs], rev(dat$Date[zoom_idx_obs])),
+          c(X_CI_obs[1, zoom_idx_obs], rev(X_CI_obs[2, zoom_idx_obs])),
+          col = rgb(0, 0, 1, 0.2), border = NA)
+
+  # Median lines
+  lines(dat$Date[zoom_idx_obs], X_median_obs[zoom_idx_obs], col = "blue", lwd = 2)
+  lines(future_dates[zoom_idx_forecast], X_median_forecast[zoom_idx_forecast], col = "purple", lwd = 3, lty = 1)
+
+  # Observed data points
+  points(dat$Date[zoom_idx_obs], data$y[zoom_idx_obs], pch = 21, bg = "white")
+
+}
+zoomed_plot()
+```
+## Helper Functions
+
+```{r}
+set.seed(111)
+##' @param IC    Vector of initial conditions (length = n)
+##' @param r     Scalar intrinsic growth rate
+##' @param K     Scalar carrying capacity
+##' @param tau   Vector of time steps (length = steps)
+##' @param n     Size of Monte Carlo ensemble
+##' @param steps Number of forecast steps (default = 12)
+forecastN <- function(IC, r, K, tau, n = 1000, steps = 12) {
+  N <- matrix(NA, n, steps)       # Forecast matrix
+  Nprev <- IC                     # Starting values (should be length n)
+  
+  for (t in 1:steps) {
+    mu <- ((K * Nprev) / (Nprev + (K - Nprev))) * exp(-r * tau[t])
+    N[, t] <- pmax(0, mu)         # Deterministic projection
+    Nprev <- N[, t]               # Advance to next time step
+  }
+  
+  return(N)
+}
+
+
+# helper to compute 95% CI and median
+calc_forecast_ci <- function(fmat) {
+  list(
+    ci = apply(fmat, 2, quantile, probs = c(0.025, 0.975)),
+    median = apply(fmat, 2, median)
+  )
+}
+
+# helper to draw ci envelopes
+draw_env <- function(ci, dates, col) {
+  polygon(c(dates, rev(dates)),
+          c(ci[1,], rev(ci[2,])),
+          col = col, border = NA)
+}
+
+```
+
+## Initial condition uncertainty
+Let's start by partitioning out the initial condition uncertainty.
+
+```{r}
+posterior <- as.matrix(out_forecast)
+
+# Sample ICs from the posterior distribution of N[58] (last latent state)
+IC <- sample(posterior[,"N[58]"], size = 1000, replace = TRUE)
+
+# Fix other parameters using posterior mean or a draw
+r <- mean(posterior[, "r"])
+K <- mean(posterior[, "K"])
+tau_forecast <- rep(1, 12)  # constant 1-month steps
+
+# Forecast
+N.I <- forecastN(IC = IC, r = r, K = K, tau = tau_forecast, n = 1000, steps = 12)
+
+```
+
+```{r}
+
+N.I.ci <- apply(N.I, 2, quantile, c(0.025, 0.5, 0.975))
+
+zoomed_plot()
+ecoforecastR::ciEnvelope(future_dates, N.I.ci[1,], N.I.ci[3,], col = rgb(0.6, 0.6, 0.6, 0.4))
+lines(future_dates, N.I.ci[2,], col = "black", lwd = 1)
+
+```
+
+
+## Initial Ccondition uncertainty + Parameter uncertainty
+
+```{r}
+n.mc <- 1000
+steps <- 12
+tau_forecast <- rep(1, steps)
+
+# Sample ensemble from posterior
+rows <- sample(1:nrow(posterior), n.mc, replace = TRUE)
+
+ICs <- posterior[rows, "N[58]"]
+rs  <- posterior[rows, "r"]
+Ks  <- posterior[rows, "K"]
+
+# Forecast with varying IC + param, no process noise
+N.IP <- forecastN(IC = ICs, r = rs, K = Ks, tau = tau_forecast, n = n.mc, steps = steps)
+
+# Summarize
+N.IP.ci <- apply(N.IP, 2, quantile, probs = c(0.025, 0.5, 0.975))
+```
+
+
+```{r}
+zoomed_plot()
+
+# Red envelope for N.IP
+ecoforecastR::ciEnvelope(future_dates, N.IP.ci[1,], N.IP.ci[3,], col = rgb(1, 0, 0, 0.4))  # red with transparency
+lines(future_dates, N.IP.ci[2,], lwd = 2, col = "red")
+
+# envelope for N.I (initial condition only)
+ecoforecastR::ciEnvelope(future_dates,N.I.ci[1,],N.I.ci[3,],col=rgb(0.6, 0.6, 0.6, 0.4))
+lines(future_dates,N.I.ci[2,],lwd=0.5)
+
+```
+
+
+*Note*: we do not have any environmental drivers in our model, so calculating N.IPD will not add any additional uncertainty
+
+# Layering in process noise (N.IPDE)
+
+```{r}
+# redefine function to include process noise term
+forecastN <- function(IC, r, K, sigma, tau, n = 1000, steps = 12) {
+  N <- matrix(NA, n, steps)
+  Nprev <- IC
+  
+  for (t in 1:steps) {
+    mu <- ((K * Nprev) / (Nprev + (K - Nprev))) * exp(-r * tau[t])
+    N[, t] <- pmax(0, rnorm(n, mean = mu, sd = sigma^tau[t]))  # Add process noise
+    Nprev <- N[, t]
+  }
+  
+  return(N)
+}
+
+
+```
+
+```{r}
+n.mc <- 1000
+steps <- 12
+tau_forecast <- rep(1, steps)
+
+rows <- sample(1:nrow(posterior), n.mc, replace = TRUE)
+
+ICs    <- posterior[rows, "N[58]"]
+rs     <- posterior[rows, "r"]
+Ks     <- posterior[rows, "K"]
+sigmas <- posterior[rows, "sigma"]
+
+# Now include process noise
+N.IPDE <- forecastN(IC = ICs, r = rs, K = Ks, sigma = sigmas,
+                    tau = tau_forecast, n = n.mc, steps = steps)
+
+# Summarize
+N.IPDE.ci <- apply(N.IPDE, 2, quantile, probs = c(0.025, 0.5, 0.975))
+
+```
+
+```{r}
+zoomed_plot()
+
+# Dark blue envelope for N.IPDE
+ecoforecastR::ciEnvelope(future_dates, N.IPDE.ci[1,], N.IPDE.ci[3,],
+                         col = rgb(0, 0, 0.6, 0.4))  # dark blue with transparency
+
+# Median line in matching blue
+lines(future_dates, N.IPDE.ci[2,], lwd = 2, col = "darkblue")
+
+# Optionally overlay earlier layers
+ecoforecastR::ciEnvelope(future_dates, N.IP.ci[1,], N.IP.ci[3,], col = rgb(1, 0, 0, 0.3))  # red
+lines(future_dates, N.IP.ci[2,], lwd = 1, col = "red")
+
+ecoforecastR::ciEnvelope(future_dates, N.I.ci[1,], N.I.ci[3,], col = rgb(0.6, 0.6, 0.6, 0.3))  # gray
+lines(future_dates, N.I.ci[2,], lwd = 1, col = "gray40")
+
+```
+
+# Layer in random effect
+Since we don't have any random effect in the model, we're going to add some noise to our sigma term to simulate that.
+
+```{r}
+n.mc <- 1000
+steps <- 12
+tau_forecast <- rep(1, steps)
+
+rows <- sample(1:nrow(posterior), n.mc, replace = TRUE)
+
+ICs    <- posterior[rows, "N[58]"]
+rs     <- posterior[rows, "r"]
+Ks     <- posterior[rows, "K"]
+sigmas <- posterior[rows, "sigma"]
+
+# Simulate added random-effect variance (+/- 20% around sigma)
+rand_sigma <- sigmas * runif(n.mc, 0.8, 1.2)
+
+# Forecast
+N.IPDEA <- forecastN(IC = ICs, r = rs, K = Ks, sigma = rand_sigma,
+                     tau = tau_forecast, n = n.mc, steps = steps)
+
+# Summarize
+N.IPDEA.ci <- apply(N.IPDEA, 2, quantile, probs = c(0.025, 0.5, 0.975))
+
+```
+
+```{r}
+zoomed_plot()
+
+# Orange envelope for N.IPDEA
+ecoforecastR::ciEnvelope(future_dates, N.IPDEA.ci[1,], N.IPDEA.ci[3,],
+                         col = rgb(1, 0.5, 0, 0.4))  # semi-transparent orange
+lines(future_dates, N.IPDEA.ci[2,], lwd = 2, col = "orange3")
+
+# Layer earlier envelopes
+ecoforecastR::ciEnvelope(future_dates, N.IPDE.ci[1,], N.IPDE.ci[3,], col = rgb(0, 0, 0.6, 0.3))  # dark blue
+lines(future_dates, N.IPDE.ci[2,], lwd = 1, col = "darkblue")
+
+ecoforecastR::ciEnvelope(future_dates, N.IP.ci[1,], N.IP.ci[3,], col = rgb(1, 0, 0, 0.3))        # red
+lines(future_dates, N.IP.ci[2,], lwd = 1, col = "red")
+
+ecoforecastR::ciEnvelope(future_dates, N.I.ci[1,], N.I.ci[3,], col = rgb(0.6, 0.6, 0.6, 0.3))    # gray
+lines(future_dates, N.I.ci[2,], lwd = 1, col = "gray40")
+
+```
+
+# Stacked Error Partitions
+
+```{r}
+### calculation of variances
+varI     <- apply(N.I,2,var)
+varIP    <- apply(N.IP,2,var)
+varIPDE   <- apply(N.IPDE,2,var)
+varIPDEA <- apply(N.IPDEA,2,var)
+varMat   <- rbind(varI,varIP,varIPDE,varIPDEA)
+
+## out-of-sample stacked area plot
+V.pred.rel <- apply(varMat,2,function(x) {x/max(x)})
+plot(future_dates,V.pred.rel[1,],ylim=c(0,1),type='n',main="Relative Variance: Out-of-Sample",ylab="Proportion of Variance",xlab="time")
+ecoforecastR::ciEnvelope(future_dates,rep(0,ncol(V.pred.rel)),V.pred.rel[1,],col="black")
+ecoforecastR::ciEnvelope(future_dates,V.pred.rel[1,],V.pred.rel[2,],col="blue")
+ecoforecastR::ciEnvelope(future_dates,V.pred.rel[2,],V.pred.rel[3,],col="red")
+ecoforecastR::ciEnvelope(future_dates,V.pred.rel[3,],V.pred.rel[4,],col="green")
+legend("topright",legend=c("RandomEffect","Process","Parameter","InitCond"),col=c("green", "red", "blue", "black"),lty=1,lwd=5)
+```
+
